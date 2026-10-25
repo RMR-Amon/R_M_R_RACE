@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: #0b0820;
+  color: #fff;
+  overscroll-behavior: none;
+}
+body {
+  font-family: Nunito, system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+@layer components {
+  .btn-primary {
+    @apply relative inline-flex items-center justify-center gap-2 rounded-2xl px-6 py-3 font-display text-lg uppercase tracking-wide text-white
+      bg-gradient-to-b from-orange-400 to-rose-600 shadow-[0_6px_0_#7f1d1d,0_10px_30px_rgba(244,63,94,.45)]
+      transition active:translate-y-1 active:shadow-[0_2px_0_#7f1d1d] hover:brightness-110 disabled:opacity-40 disabled:pointer-events-none;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 font-display uppercase tracking-wide text-white/90
+      bg-white/10 ring-1 ring-white/15 backdrop-blur transition hover:bg-white/20 active:scale-95;
+  }
+  .panel {
+    @apply rounded-3xl bg-white/[0.06] ring-1 ring-white/10 backdrop-blur-md shadow-2xl;
+  }
+  .text-outline {
+    text-shadow: 0 2px 0 rgba(0,0,0,.6), 0 0 18px rgba(0,0,0,.35);
+  }
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); border-radius: 9px; }
