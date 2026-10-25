@@ -1,4 +1,6 @@
-# Turbo Rush 3D
+# R_M_R_RACE
+
+Игра от **R_M_R**.
 
 Аркадные 3D-гонки на React + TypeScript + Tailwind + Three.js.
 

@@ -246,8 +246,9 @@ export function buildTrackVisuals(track: Track, theme: ThemeId): TrackVisuals {
       new THREE.BoxGeometry(span * 2 + 1.2, 2.2, 0.6),
       [
         pillarMat, pillarMat, pillarMat, pillarMat,
-        new THREE.MeshStandardMaterial({ map: bannerTexture('START  •  FINISH', '#111827', '#ffffff'), emissive: '#ffffff', emissiveMap: bannerTexture('START  •  FINISH', '#111827', '#ffffff'), emissiveIntensity: 0.6 }),
+        // face 4 (+z) faces away from approaching cars; face 5 (-z) is what drivers see coming to the line
         new THREE.MeshStandardMaterial({ map: bannerTexture('ДАВАЙ  ДАВАЙ!', '#e11d48', '#ffffff'), emissive: '#ffffff', emissiveMap: bannerTexture('ДАВАЙ  ДАВАЙ!', '#e11d48', '#ffffff'), emissiveIntensity: 0.5 }),
+        new THREE.MeshStandardMaterial({ map: bannerTexture('R_M_R_RACE', '#111827', '#ffffff'), emissive: '#ffffff', emissiveMap: bannerTexture('R_M_R_RACE', '#111827', '#ffffff'), emissiveIntensity: 0.6 }),
       ],
     );
     banner.position.y = 9.5;

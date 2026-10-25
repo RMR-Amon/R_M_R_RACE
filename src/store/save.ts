@@ -10,6 +10,7 @@ export interface SaveData {
   races: number;
 }
 
+// key kept from the original name so existing progress is not lost
 const KEY = 'turbo-rush-3d-save-v1';
 
 const DEFAULT: SaveData = {
