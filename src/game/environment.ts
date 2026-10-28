@@ -752,6 +752,10 @@ function buildSky(theme: ThemeId) {
       top: { value: new THREE.Color(st.skyTop) },
       horizon: { value: new THREE.Color(st.skyHorizon) },
       bottom: { value: new THREE.Color(st.skyBottom) },
+      sunDir: { value: new THREE.Vector3(...st.sunDir).normalize() },
+      sunColor: { value: new THREE.Color(st.sun) },
+      clouds: { value: theme === 'ocean' ? 0 : theme === 'city' ? 0.35 : 1 },
+      night: { value: theme === 'city' ? 1 : 0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
@@ -762,10 +766,34 @@ function buildSky(theme: ThemeId) {
       }`,
     fragmentShader: /* glsl */ `
       uniform vec3 top; uniform vec3 horizon; uniform vec3 bottom;
+      uniform vec3 sunDir; uniform vec3 sunColor; uniform float clouds; uniform float night;
       varying vec3 vDir;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float vnoise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+      }
+      float fbm(vec2 p) {
+        float v = 0.0; float a = 0.5;
+        for (int i = 0; i < 5; i++) { v += a * vnoise(p); p *= 2.03; a *= 0.5; }
+        return v;
+      }
       void main() {
-        float h = vDir.y;
+        vec3 dir = normalize(vDir);
+        float h = dir.y;
         vec3 c = h > 0.0 ? mix(horizon, top, pow(h, 0.55)) : mix(horizon, bottom, pow(-h, 0.4));
+        // sun disc + wide glow (a moon-like glow at night)
+        float sd = max(dot(dir, sunDir), 0.0);
+        c += sunColor * (pow(sd, 900.0) * (night > 0.5 ? 1.5 : 6.0) + pow(sd, 12.0) * 0.35 + pow(sd, 3.0) * 0.12);
+        // drifting cloud layer projected on a dome
+        if (h > 0.0 && clouds > 0.0) {
+          vec2 uv = dir.xz / (h + 0.18) * 1.6;
+          float n = fbm(uv + vec2(0.0, 0.0));
+          float cov = smoothstep(0.52, 0.78, n) * smoothstep(0.0, 0.25, h);
+          vec3 cloudCol = mix(horizon * 1.1, vec3(1.0), 0.55 - night * 0.35) + sunColor * pow(sd, 6.0) * 0.4;
+          c = mix(c, cloudCol, cov * clouds * 0.85);
+        }
         gl_FragColor = vec4(c, 1.0);
         #include <colorspace_fragment>
       }`,

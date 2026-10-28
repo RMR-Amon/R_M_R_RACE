@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { MapDef } from '../data/maps';
+import { fmtNum, t } from '../i18n';
 
 export function CoinBadge({ coins, className = '' }: { coins: number; className?: string }) {
   return (
@@ -7,7 +8,7 @@ export function CoinBadge({ coins, className = '' }: { coins: number; className?
       <span className="grid h-7 w-7 place-items-center rounded-full bg-gradient-to-b from-yellow-300 to-amber-500 text-sm font-black text-amber-900 shadow-inner">
         $
       </span>
-      <span className="font-display text-lg tabular-nums text-amber-200">{coins.toLocaleString('ru-RU')}</span>
+      <span className="font-display text-lg tabular-nums text-amber-200">{fmtNum(coins)}</span>
     </div>
   );
 }
@@ -40,7 +41,7 @@ export function TopBar({ title, onBack, right }: { title: string; onBack: () => 
   return (
     <div className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-[#0b0820]/70 px-4 py-3 backdrop-blur-md sm:px-8">
       <button onClick={onBack} className="btn-ghost shrink-0 !px-4 !py-2 text-sm">
-        ←<span className="hidden sm:inline"> Назад</span>
+        ←<span className="hidden sm:inline"> {t('common.back')}</span>
       </button>
       <h1 className="truncate font-display text-lg uppercase tracking-wider sm:text-3xl">{title}</h1>
       <div className="flex shrink-0 justify-end">{right}</div>
@@ -49,7 +50,65 @@ export function TopBar({ title, onBack, right }: { title: string; onBack: () => 
 }
 
 /** SVG outline of a track for map cards */
+/** Row of round colour buttons */
+export function Swatches({ colors, value, onPick }: { colors: string[]; value: string; onPick: (c: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {colors.map((c) => (
+        <button
+          key={c}
+          onClick={() => onPick(c)}
+          aria-label={c}
+          className={`h-8 w-8 rounded-full ring-2 transition sm:h-9 sm:w-9 ${value.toLowerCase() === c.toLowerCase() ? 'scale-110 ring-white' : 'ring-white/15 hover:ring-white/50'}`}
+          style={{ background: c }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Pill-style option buttons (single choice) */
+export function Choice<T extends string | number>({
+  options,
+  value,
+  onPick,
+  className = '',
+}: {
+  options: { id: T; label: ReactNode; sub?: ReactNode }[];
+  value: T;
+  onPick: (v: T) => void;
+  className?: string;
+}) {
+  return (
+    <div className={`flex flex-wrap gap-2.5 ${className}`}>
+      {options.map((o) => (
+        <button
+          key={String(o.id)}
+          onClick={() => onPick(o.id)}
+          className={`rounded-2xl px-4 py-2.5 text-left ring-2 transition ${
+            value === o.id ? 'bg-gradient-to-b from-orange-400 to-rose-600 ring-white' : 'bg-white/5 ring-white/10 hover:bg-white/10'
+          }`}
+        >
+          <div className="font-display text-base">{o.label}</div>
+          {o.sub && <div className="max-w-[16rem] text-xs text-white/70">{o.sub}</div>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function TrackThumb({ map, className = '' }: { map: MapDef; className?: string }) {
+  if (map.oval) {
+    const { a, b } = map.oval;
+    return (
+      <svg viewBox={`${-a - 30} ${-b - 30} ${a * 2 + 60} ${b * 2 + 60}`} className={className} preserveAspectRatio="xMidYMid meet">
+        <ellipse cx={0} cy={0} rx={a + 8} ry={b + 8} fill="rgba(0,0,0,.45)" />
+        <ellipse cx={0} cy={0} rx={a} ry={b} fill="white" />
+        <ellipse cx={0} cy={0} rx={a * 0.55} ry={b * 0.55} fill="none" stroke="rgba(0,0,0,.3)" strokeWidth={4} strokeDasharray="14 14" />
+        <circle cx={0} cy={0} r={16} fill="#facc15" stroke="#111" strokeWidth={5} />
+      </svg>
+    );
+  }
   const xs = map.points.map((p) => p[0]);
   const zs = map.points.map((p) => p[1]);
   const minX = Math.min(...xs);

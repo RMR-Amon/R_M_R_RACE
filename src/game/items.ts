@@ -1,17 +1,26 @@
 import * as THREE from 'three';
 import type { ItemType } from './types';
 import { itemBoxTexture } from './textures';
+import { t, type TKey } from '../i18n';
 
-export const ITEM_INFO: Record<ItemType, { name: string; icon: string; color: string; hint: string }> = {
-  missile: { name: 'Ракета', icon: '🚀', color: '#ef4444', hint: 'Самонаводящаяся ракета в соперника впереди' },
-  bomb: { name: 'Бомба', icon: '💣', color: '#111827', hint: 'Оставляет бомбу позади (одноразовая)' },
-  oil: { name: 'Масло', icon: '🛢️', color: '#0f172a', hint: 'Лужа масла позади (одноразовая)' },
-  boost: { name: 'Нитро', icon: '⚡', color: '#f59e0b', hint: 'Ускорение на 3 секунды' },
-  shield: { name: 'Щит', icon: '🛡️', color: '#38bdf8', hint: 'Защита от атак на 6 секунд' },
-  ice: { name: 'Ледяные заряды', icon: '❄️', color: '#67e8f9', hint: '3 заряда: летят прямо и замораживают на 1.5 с' },
+export const ITEM_INFO: Record<ItemType, { icon: string; color: string }> = {
+  missile: { icon: '🚀', color: '#ef4444' },
+  bomb: { icon: '💣', color: '#111827' },
+  oil: { icon: '🛢️', color: '#0f172a' },
+  boost: { icon: '⚡', color: '#f59e0b' },
+  shield: { icon: '🛡️', color: '#38bdf8' },
+  ice: { icon: '❄️', color: '#67e8f9' },
+  fly: { icon: '✈️', color: '#a78bfa' },
 };
 
-export const ITEM_LIST: ItemType[] = ['missile', 'bomb', 'oil', 'boost', 'shield', 'ice'];
+export const itemName = (it: ItemType) => t(`item.${it}.name` as TKey);
+export const itemHint = (it: ItemType) => t(`item.${it}.hint` as TKey);
+
+export const ITEM_LIST: ItemType[] = ['missile', 'bomb', 'oil', 'boost', 'shield', 'ice', 'fly'];
+
+/** Missile fuse: it self-destructs if it has not reached its target in time */
+export const MISSILE_FUSE = 6;
+export const FLY_TIME = 5;
 
 let shared: {
   box: THREE.BoxGeometry;
@@ -195,4 +204,74 @@ export function makeNameTag(name: string, color: string) {
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true }));
   sprite.scale.set(3.2, 0.8, 1);
   return sprite;
+}
+
+/** Jet wings + thrusters shown while a car is flying */
+export function makeWings() {
+  const g = new THREE.Group();
+  const wingMat = new THREE.MeshStandardMaterial({ color: '#e5e7eb', metalness: 0.7, roughness: 0.25, emissive: '#7c3aed', emissiveIntensity: 0.25 });
+  const tipMat = new THREE.MeshStandardMaterial({ color: '#a78bfa', emissive: '#a78bfa', emissiveIntensity: 2.2 });
+  for (const side of [-1, 1]) {
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0.7);
+    shape.lineTo(2.6, -0.2);
+    shape.lineTo(2.6, -0.65);
+    shape.lineTo(0, -0.7);
+    shape.closePath();
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.08, bevelEnabled: false });
+    geo.rotateX(Math.PI / 2);
+    const wing = new THREE.Mesh(geo, wingMat);
+    wing.scale.x = side;
+    wing.position.set(side * 0.9, 0.95, -0.2);
+    wing.castShadow = true;
+    g.add(wing);
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.5), tipMat);
+    tip.position.set(side * 3.5, 0.95, 0.15);
+    g.add(tip);
+    const jet = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 0.9, 12), wingMat);
+    jet.rotation.x = Math.PI / 2;
+    jet.position.set(side * 1.6, 0.8, -0.6);
+    g.add(jet);
+    const flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.22, 1.3, 10),
+      new THREE.MeshBasicMaterial({ color: '#c4b5fd', transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    flame.name = 'flame';
+    flame.rotation.x = -Math.PI / 2;
+    flame.position.set(side * 1.6, 0.8, -1.65);
+    g.add(flame);
+  }
+  return g;
+}
+
+/** Small canvas sprite that shows text (missile fuse timer / warnings), redrawn on demand */
+export function makeLabel(w = 160, h = 64) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d')!;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  sprite.renderOrder = 10;
+  let last = '';
+  const draw = (text: string, bg: string, fg = '#ffffff') => {
+    if (text === last) return;
+    last = text;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = bg;
+    ctx.beginPath();
+    ctx.roundRect(4, 4, w - 8, h - 8, 18);
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.stroke();
+    ctx.fillStyle = fg;
+    ctx.font = '900 34px Nunito, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, w / 2, h / 2 + 2);
+    tex.needsUpdate = true;
+  };
+  return { sprite, draw };
 }

@@ -1,39 +1,41 @@
 import type { ThemeId } from '../game/types';
+import { t, type TKey } from '../i18n';
 
 export interface MapDef {
   id: string;
-  name: string;
   theme: ThemeId;
-  description: string;
   /** Control points of the closed track centre line (x, z) */
   points: [number, number][];
   width: number;
   arena?: boolean;
+  /** battle arena: an ellipse with semi-axes a (x) and b (z), drivable everywhere inside */
+  oval?: { a: number; b: number };
   seed: number;
 }
 
 export interface ThemeInfo {
   id: ThemeId;
-  name: string;
   emoji: string;
   gradient: string;
   accent: string;
 }
 
 export const THEMES: Record<ThemeId, ThemeInfo> = {
-  city: { id: 'city', name: 'Город', emoji: '🌆', gradient: 'from-indigo-600 via-fuchsia-600 to-orange-400', accent: '#f472b6' },
-  desert: { id: 'desert', name: 'Пустыня', emoji: '🏜️', gradient: 'from-amber-300 via-orange-500 to-red-600', accent: '#f59e0b' },
-  ocean: { id: 'ocean', name: 'Под водой', emoji: '🐠', gradient: 'from-cyan-400 via-blue-600 to-indigo-900', accent: '#22d3ee' },
-  pixel: { id: 'pixel', name: 'Пиксельный мир', emoji: '👾', gradient: 'from-lime-400 via-emerald-500 to-sky-500', accent: '#84cc16' },
-  candy: { id: 'candy', name: 'Мир сладостей', emoji: '🍭', gradient: 'from-pink-300 via-rose-400 to-purple-500', accent: '#f9a8d4' },
+  city: { id: 'city', emoji: '🌆', gradient: 'from-indigo-600 via-fuchsia-600 to-orange-400', accent: '#f472b6' },
+  desert: { id: 'desert', emoji: '🏜️', gradient: 'from-amber-300 via-orange-500 to-red-600', accent: '#f59e0b' },
+  ocean: { id: 'ocean', emoji: '🐠', gradient: 'from-cyan-400 via-blue-600 to-indigo-900', accent: '#22d3ee' },
+  pixel: { id: 'pixel', emoji: '👾', gradient: 'from-lime-400 via-emerald-500 to-sky-500', accent: '#84cc16' },
+  candy: { id: 'candy', emoji: '🍭', gradient: 'from-pink-300 via-rose-400 to-purple-500', accent: '#f9a8d4' },
 };
+
+export const themeName = (id: ThemeId) => t(`theme.${id}` as TKey);
+export const mapName = (m: MapDef) => t(`map.${m.id}.name` as TKey);
+export const mapDesc = (m: MapDef) => t(`map.${m.id}.desc` as TKey);
 
 export const RACE_MAPS: MapDef[] = [
   {
     id: 'city',
-    name: 'Неоновый Мегаполис',
     theme: 'city',
-    description: 'Ночные улицы, небоскрёбы и разрушенный мост над рекой.',
     width: 34,
     seed: 11,
     points: [
@@ -43,9 +45,7 @@ export const RACE_MAPS: MapDef[] = [
   },
   {
     id: 'desert',
-    name: 'Каньон Миражей',
     theme: 'desert',
-    description: 'Раскалённые дюны, кактусы, пирамиды и огромный каньон.',
     width: 34,
     seed: 23,
     points: [
@@ -55,9 +55,7 @@ export const RACE_MAPS: MapDef[] = [
   },
   {
     id: 'ocean',
-    name: 'Коралловый Риф',
     theme: 'ocean',
-    description: 'Подводная трасса среди кораллов, рыб и глубоководной впадины.',
     width: 34,
     seed: 37,
     points: [
@@ -67,9 +65,7 @@ export const RACE_MAPS: MapDef[] = [
   },
   {
     id: 'pixel',
-    name: '8-Бит Королевство',
     theme: 'pixel',
-    description: 'Ретро-мир из кубиков, труб и парящих блоков.',
     width: 34,
     seed: 41,
     points: [
@@ -79,9 +75,7 @@ export const RACE_MAPS: MapDef[] = [
   },
   {
     id: 'candy',
-    name: 'Сахарная Спираль',
     theme: 'candy',
-    description: 'Леденцы, кексы, пончики и шоколадная река.',
     width: 34,
     seed: 53,
     points: [
@@ -91,33 +85,28 @@ export const RACE_MAPS: MapDef[] = [
   },
 ];
 
-/** Rounded-rectangle arena for battle mode */
-function stadiumPoints(halfLen: number, halfWid: number, r: number): [number, number][] {
+const OVAL = { a: 165, b: 105 };
+/** half-width of the virtual ring along the arena wall (used for AI and spectators) */
+const ARENA_RING = 20;
+
+function ovalRing(): [number, number][] {
   const pts: [number, number][] = [];
-  const corners: [number, number, number][] = [
-    [halfLen - r, -(halfWid - r), -Math.PI / 2],
-    [halfLen - r, halfWid - r, 0],
-    [-(halfLen - r), halfWid - r, Math.PI / 2],
-    [-(halfLen - r), -(halfWid - r), Math.PI],
-  ];
-  for (const [cx, cz, a0] of corners) {
-    for (let i = 0; i <= 4; i++) {
-      const a = a0 + (i / 4) * (Math.PI / 2);
-      pts.push([cx + Math.cos(a) * r, cz + Math.sin(a) * r]);
-    }
+  const n = 96;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    pts.push([Math.cos(a) * (OVAL.a - ARENA_RING), Math.sin(a) * (OVAL.b - ARENA_RING)]);
   }
   return pts;
 }
 
 export const ARENA_MAP: MapDef = {
   id: 'arena',
-  name: 'Арена Битвы',
   theme: 'city',
-  description: 'Прямоугольно-круглая арена. Попадай во врагов и набирай очки!',
-  width: 52,
+  width: ARENA_RING * 2,
   arena: true,
+  oval: OVAL,
   seed: 77,
-  points: stadiumPoints(230, 140, 110),
+  points: ovalRing(),
 };
 
 export const getMap = (id: string): MapDef =>

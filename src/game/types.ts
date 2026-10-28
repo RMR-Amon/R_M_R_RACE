@@ -11,6 +11,9 @@ export interface CarStats {
   weight: number;
 }
 
+/** Engine layout — drives the synthesized engine sound */
+export type EngineKind = 'i4' | 'v6' | 'v8' | 'v12' | 'single' | 'electric' | 'diesel' | 'f1' | 'boxer';
+
 export interface CarDef {
   id: string;
   name: string;
@@ -21,7 +24,7 @@ export interface CarDef {
   glow?: string;
   price: number;
   stats: CarStats;
-  description: string;
+  engine: EngineKind;
 }
 
 /** Physical parameters derived from stats */
@@ -32,17 +35,53 @@ export interface CarParams {
   brake: number;
   grip: number;
   mass: number;
+  /** how well the car keeps a slide under control */
+  drift: number;
+  gears: number;
 }
 
-export type ItemType = 'missile' | 'bomb' | 'oil' | 'boost' | 'shield' | 'ice';
+export type ItemType = 'missile' | 'bomb' | 'oil' | 'boost' | 'shield' | 'ice' | 'fly';
+
+export type Difficulty = 'easy' | 'medium' | 'hard' | 'impossible';
+
+export type Quality = 'low' | 'medium' | 'high';
 
 export type GameMode = { kind: 'race'; laps: number } | { kind: 'battle'; duration: number };
+
+export type Accessory = 'glasses' | 'shades' | 'cap' | 'crown' | 'headphones' | 'scarf' | 'chain' | 'mohawk' | 'cape';
+
+export interface DriverLook {
+  skin: string;
+  suit: string;
+  suitAccent: string;
+  helmet: string;
+  visor: string;
+  hair: string;
+  accessories: Accessory[];
+}
+
+export interface Paint {
+  color: string;
+  accent: string;
+}
 
 export interface RaceConfig {
   mapId: string;
   theme: ThemeId;
   mode: GameMode;
   carId: string;
+  difficulty: Difficulty;
+  /** number of AI opponents */
+  opponents: number;
+  items: boolean;
+  paint?: Paint;
+  driver: DriverLook;
+  /** story level (1..100) when started from the campaign */
+  storyLevel?: number;
+  /** fixed rival for 1-on-1 duels */
+  rival?: { carId: string; name: string; look: DriverLook };
+  intro: boolean;
+  quality: Quality;
 }
 
 export interface StandingRow {
@@ -57,9 +96,10 @@ export interface StandingRow {
 }
 
 export interface HudState {
-  phase: 'countdown' | 'racing' | 'finished';
+  phase: 'intro' | 'countdown' | 'racing' | 'finished';
   countdown: number;
   speedKmh: number;
+  gear: number;
   place: number;
   total: number;
   lap: number;
@@ -72,7 +112,18 @@ export interface HudState {
   boost: number;
   shield: number;
   frozen: boolean;
+  /** seconds of flight left (lucky-block "fly") */
+  fly: number;
+  /** drift intensity 0..1 (>= ~0.5 is a "good" drift that can dodge missiles) */
+  drift: number;
+  /** a missile is homing on the player: fuse seconds left + distance in metres */
+  incoming: { time: number; dist: number } | null;
+  /** the player's own missile in flight: fuse seconds left */
+  ownMissile: number | null;
+  mirrors: boolean;
   points: number;
+  mistakes: number;
+  difficulty: Difficulty;
   standings: StandingRow[];
   message: string;
   messageId: number;
@@ -96,4 +147,6 @@ export interface RaceResult {
   rows: ResultRow[];
   playerCoins: number;
   playerPlace: number;
+  mistakes: number;
+  storyLevel?: number;
 }

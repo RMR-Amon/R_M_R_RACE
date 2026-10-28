@@ -29,6 +29,10 @@ export interface BoostPad {
   lat: number;
   len: number;
   width: number;
+  /** arena pads are placed freely: world-space centre and direction */
+  x?: number;
+  z?: number;
+  heading?: number;
 }
 
 export interface Barrier {
@@ -40,6 +44,8 @@ export interface Barrier {
   z: number;
   tx: number;
   tz: number;
+  /** > 0 while the barricade is smashed (seconds until it is rebuilt) */
+  brokenT: number;
 }
 
 export interface Projection {
@@ -57,6 +63,10 @@ export class Track {
   readonly length: number;
   readonly halfWidth: number;
   readonly arena: boolean;
+  /** battle arena ellipse (drivable everywhere inside) */
+  readonly oval: { a: number; b: number } | null;
+  /** free item-box positions inside the arena */
+  arenaBoxes: { x: number; z: number }[] = [];
   gap: GapInfo | null = null;
   boosts: BoostPad[] = [];
   itemRows: number[] = [];
@@ -67,14 +77,16 @@ export class Track {
   constructor(map: MapDef) {
     this.halfWidth = map.width / 2;
     this.arena = !!map.arena;
+    this.oval = map.oval ?? null;
+    const scale = this.oval ? 1 : TRACK_SCALE;
     const curve = new THREE.CatmullRomCurve3(
-      map.points.map(([x, z]) => new THREE.Vector3(x * TRACK_SCALE, 0, z * TRACK_SCALE)),
+      map.points.map(([x, z]) => new THREE.Vector3(x * scale, 0, z * scale)),
       true,
       'centripetal',
     );
     // dense sampling, then a light smoothing pass to iron out any tight spots
     const dense = curve.getSpacedPoints(1600).slice(0, -1).map((p) => [p.x, p.z] as [number, number]);
-    for (let it = 0; it < SMOOTH_ITER; it++) {
+    for (let it = 0; it < (this.oval ? 0 : SMOOTH_ITER); it++) {
       const copy = dense.map((p) => [p[0], p[1]] as [number, number]);
       const n = dense.length;
       for (let i = 0; i < n; i++) {
@@ -94,10 +106,10 @@ export class Track {
     const total = cum[cum.length - 1];
     const count = Math.round(total / STEP);
     this.length = count * STEP;
-    const scale = total / this.length;
+    const stretch = total / this.length;
     let j = 0;
     for (let i = 0; i < count; i++) {
-      const target = i * STEP * scale;
+      const target = i * STEP * stretch;
       while (cum[j + 1] < target) j++;
       const a = dense[j];
       const b = dense[(j + 1) % dense.length];
@@ -216,8 +228,27 @@ export class Track {
     };
   }
 
-  /** Distance from any world point to the track centre line (approximate, capped) */
+  /** >1 outside the arena ellipse, <1 inside */
+  ovalValue(x: number, z: number) {
+    const o = this.oval!;
+    return (x / o.a) ** 2 + (z / o.b) ** 2;
+  }
+
+  /**
+   * Distance from any world point to the track centre line (approximate, capped).
+   * In the oval arena the whole inside is road, so the result is 0 there and grows outside the wall.
+   */
   distToCenter(x: number, z: number, maxR = 120): number {
+    if (this.oval) {
+      const k = Math.sqrt(this.ovalValue(x, z));
+      if (k <= 1) return 0;
+      const r = Math.hypot(x, z);
+      return Math.min(maxR, this.halfWidth + r * (1 - 1 / k));
+    }
+    return this.ringDist(x, z, maxR);
+  }
+
+  private ringDist(x: number, z: number, maxR: number): number {
     const cx = Math.floor(x / this.cell);
     const cz = Math.floor(z / this.cell);
     const r = Math.ceil(maxR / this.cell);
@@ -289,6 +320,10 @@ export class Track {
 
   private placeFeatures(seed: number) {
     const rng = makeRng(seed);
+    if (this.oval) {
+      this.placeArenaFeatures(rng);
+      return;
+    }
     const L = this.length;
     const hw = this.halfWidth;
     const occupied: [number, number][] = [];
@@ -365,10 +400,51 @@ export class Track {
           z: s.z + s.nz * lat,
           tx: s.tx,
           tz: s.tz,
+          brokenT: 0,
         });
       }
       occupy(d - 30, d + 30);
     }
     this.boosts.sort((a, b) => a.d - b.d);
+  }
+
+  /** Oval arena: boxes, pads and barricades scattered over the whole floor */
+  private placeArenaFeatures(rng: ReturnType<typeof makeRng>) {
+    const o = this.oval!;
+    const taken: [number, number, number][] = [];
+    const freeSpot = (x: number, z: number, r: number) =>
+      this.ovalValue(x, z) < 0.78 && taken.every(([tx, tz, tr]) => (tx - x) ** 2 + (tz - z) ** 2 > (tr + r) ** 2);
+    // item boxes in rings + centre cluster
+    for (const [rx, count] of [[0.25, 6], [0.55, 10], [0.8, 14]] as const) {
+      for (let i = 0; i < count; i++) {
+        const a = (i / count) * Math.PI * 2 + rx;
+        const x = Math.cos(a) * o.a * rx;
+        const z = Math.sin(a) * o.b * rx;
+        this.arenaBoxes.push({ x, z });
+        taken.push([x, z, 4]);
+      }
+    }
+    // boost pads pointing around the oval
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + 0.2;
+      const x = Math.cos(a) * o.a * 0.68;
+      const z = Math.sin(a) * o.b * 0.68;
+      if (!freeSpot(x, z, 7)) continue;
+      const heading = Math.atan2(-Math.sin(a) * o.a, Math.cos(a) * o.b);
+      const pr = this.project(x, z);
+      this.boosts.push({ d: pr.d, lat: pr.lat, len: 12, width: 8, x, z, heading });
+      taken.push([x, z, 8]);
+    }
+    // barricades scattered as cover
+    let tries = 0;
+    while (this.barriers.length < 14 && tries++ < 400) {
+      const x = rng.range(-o.a, o.a);
+      const z = rng.range(-o.b, o.b);
+      if (!freeSpot(x, z, 7) || Math.hypot(x, z) < 22) continue;
+      const ang = rng.range(0, Math.PI);
+      const pr = this.project(x, z);
+      this.barriers.push({ d: pr.d, lat: pr.lat, width: rng.pick([7, 8, 9]), depth: 2.2, x, z, tx: Math.sin(ang), tz: Math.cos(ang), brokenT: 0 });
+      taken.push([x, z, 7]);
+    }
   }
 }

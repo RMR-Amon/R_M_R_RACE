@@ -9,13 +9,15 @@ export class Input {
   private fireQueued = false;
   private keys = new Set<string>();
   onPause: (() => void) | null = null;
+  onMirrors: (() => void) | null = null;
 
   private onDown = (e: KeyboardEvent) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
     if (e.repeat) return;
     this.keys.add(e.code);
-    if (e.code === 'Space' || e.code === 'KeyE' || e.code === 'Enter' || e.code === 'ShiftLeft') this.fireQueued = true;
+    if (e.code === 'Space' || e.code === 'KeyE' || e.code === 'Enter') this.fireQueued = true;
     if (e.code === 'Escape' || e.code === 'KeyP') this.onPause?.();
+    if (e.code === 'KeyM') this.onMirrors?.();
     this.sync();
   };
   private onUp = (e: KeyboardEvent) => {
@@ -33,10 +35,13 @@ export class Input {
     this.right = k.has('ArrowRight') || k.has('KeyD');
     this.up = k.has('ArrowUp') || k.has('KeyW');
     this.down = k.has('ArrowDown') || k.has('KeyS');
+    this.driftKey = k.has('ShiftLeft') || k.has('ShiftRight') || k.has('KeyX');
   }
 
+  driftKey = false;
+
   // touch buttons write directly
-  touch = { left: false, right: false, gas: false, brake: false };
+  touch = { left: false, right: false, gas: false, brake: false, drift: false };
 
   fire() {
     this.fireQueued = true;
@@ -56,6 +61,9 @@ export class Input {
   }
   get throttle() {
     return this.up || this.touch.gas ? 1 : 0;
+  }
+  get drift() {
+    return this.driftKey || this.touch.drift;
   }
   get brake() {
     return this.down || this.touch.brake ? 1 : 0;
