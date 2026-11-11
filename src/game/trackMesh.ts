@@ -76,10 +76,11 @@ export function buildTrackVisuals(track: Track, theme: ThemeId): TrackVisuals {
     map: boostTex,
     emissive: '#ffffff',
     emissiveMap: boostTex,
-    emissiveIntensity: 1.3,
+    emissiveIntensity: 0.9,
     roughness: 0.4,
     transparent: false,
   });
+  const frameMat = new THREE.MeshStandardMaterial({ color: '#111827', roughness: 0.5 });
   for (const b of track.boosts) {
     const mid = b.x !== undefined ? { x: b.x, z: b.z!, heading: b.heading! } : track.pointAt(b.d + b.len / 2, b.lat);
     const pad = new THREE.Mesh(new THREE.PlaneGeometry(b.width, b.len), boostMat);
@@ -89,7 +90,7 @@ export function buildTrackVisuals(track: Track, theme: ThemeId): TrackVisuals {
     group.add(pad);
     const frame = new THREE.Mesh(
       new THREE.PlaneGeometry(b.width + 0.8, b.len + 0.8),
-      new THREE.MeshStandardMaterial({ color: '#111827', roughness: 0.5 }),
+      frameMat,
     );
     frame.rotation.copy(pad.rotation);
     frame.position.copy(pad.position);
@@ -104,8 +105,11 @@ export function buildTrackVisuals(track: Track, theme: ThemeId): TrackVisuals {
     map: barTex,
     roughness: theme === 'candy' ? 0.35 : 0.6,
     emissive: theme === 'ocean' ? new THREE.Color(st.barrierA) : new THREE.Color(0),
-    emissiveIntensity: theme === 'ocean' ? 0.3 : 0,
+    emissiveIntensity: theme === 'ocean' ? 0.08 : 0,
   });
+  // shared by every barricade
+  const lampGeo = new THREE.SphereGeometry(0.22, 10, 8);
+  const lampMat = new THREE.MeshStandardMaterial({ color: '#fbbf24', emissive: '#f59e0b', emissiveIntensity: 1.6 });
   for (const b of track.barriers) {
     const gGroup = new THREE.Group();
     const geo = theme === 'pixel' ? new THREE.BoxGeometry(b.width, 2.2, b.depth) : new THREE.BoxGeometry(b.width, 1.6, b.depth, 1, 1, 1);
@@ -117,10 +121,7 @@ export function buildTrackVisuals(track: Track, theme: ThemeId): TrackVisuals {
     if (theme !== 'pixel') {
       // blinking warning lights on top
       for (const x of [-b.width / 2 + 0.5, b.width / 2 - 0.5]) {
-        const lamp = new THREE.Mesh(
-          new THREE.SphereGeometry(0.22, 10, 8),
-          new THREE.MeshStandardMaterial({ color: '#fbbf24', emissive: '#f59e0b', emissiveIntensity: 2.5 }),
-        );
+        const lamp = new THREE.Mesh(lampGeo, lampMat);
         lamp.position.set(x, 1.8, 0);
         gGroup.add(lamp);
       }
@@ -179,7 +180,7 @@ function buildCircuit(group: THREE.Group, track: Track, theme: ThemeId) {
     map: wallTexture(theme),
     roughness: 0.7,
     emissive: theme === 'ocean' ? new THREE.Color(st.wallA) : new THREE.Color(0),
-    emissiveIntensity: theme === 'ocean' ? 0.35 : 0,
+    emissiveIntensity: theme === 'ocean' ? 0.1 : 0,
     side: THREE.DoubleSide,
   });
   const wallSkip = (d: number) => {
@@ -328,8 +329,8 @@ function buildCircuit(group: THREE.Group, track: Track, theme: ThemeId) {
       [
         pillarMat, pillarMat, pillarMat, pillarMat,
         // face 4 (+z) faces away from approaching cars; face 5 (-z) is what drivers see coming to the line
-        new THREE.MeshStandardMaterial({ map: bannerTexture('ДАВАЙ  ДАВАЙ!', '#e11d48', '#ffffff'), emissive: '#ffffff', emissiveMap: bannerTexture('ДАВАЙ  ДАВАЙ!', '#e11d48', '#ffffff'), emissiveIntensity: 0.5 }),
-        new THREE.MeshStandardMaterial({ map: bannerTexture('R_M_R_RACE', '#111827', '#ffffff'), emissive: '#ffffff', emissiveMap: bannerTexture('R_M_R_RACE', '#111827', '#ffffff'), emissiveIntensity: 0.6 }),
+        new THREE.MeshStandardMaterial({ map: bannerTexture('ДАВАЙ  ДАВАЙ!', '#c2334f', '#eeeeee'), roughness: 0.7 }),
+        new THREE.MeshStandardMaterial({ map: bannerTexture('R_M_R_RACE', '#1b2233', '#eeeeee'), emissive: '#ffffff', emissiveMap: bannerTexture('R_M_R_RACE', '#1b2233', '#eeeeee'), emissiveIntensity: 0.15, roughness: 0.7 }),
       ],
     );
     banner.position.y = 9.5;
@@ -338,7 +339,7 @@ function buildCircuit(group: THREE.Group, track: Track, theme: ThemeId) {
     for (let i = 0; i < 5; i++) {
       const l = new THREE.Mesh(
         new THREE.SphereGeometry(0.32, 12, 8),
-        new THREE.MeshStandardMaterial({ color: '#ef4444', emissive: '#ef4444', emissiveIntensity: 2 }),
+        new THREE.MeshStandardMaterial({ color: '#ef4444', emissive: '#ef4444', emissiveIntensity: 1.8 }),
       );
       l.position.set((i - 2) * 1.1, 8.0, -0.35);
       gantry.add(l);
@@ -405,7 +406,7 @@ function buildArena(group: THREE.Group, track: Track, theme: ThemeId) {
   group.add(circle);
   const logo = new THREE.Mesh(
     new THREE.PlaneGeometry(26, 6.5),
-    new THREE.MeshStandardMaterial({ map: bannerTexture('R_M_R  ARENA', 'rgba(0,0,0,0)', '#ffffff'), transparent: true, roughness: 0.7, depthWrite: false }),
+    new THREE.MeshStandardMaterial({ map: bannerTexture('R_M_R  ARENA', 'rgba(0,0,0,0)', '#ffffff'), color: '#cfcfd4', transparent: true, roughness: 0.8, depthWrite: false }),
   );
   logo.rotation.x = -Math.PI / 2;
   logo.position.y = 0.06;
@@ -466,7 +467,7 @@ function buildArena(group: THREE.Group, track: Track, theme: ThemeId) {
 
   // ---------- floodlight towers
   const poleMat = new THREE.MeshStandardMaterial({ color: '#3f3f46', metalness: 0.7, roughness: 0.35 });
-  const lampMat = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#fff7d6', emissiveIntensity: 3 });
+  const lampMat = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#fff7d6', emissiveIntensity: 1.8 });
   for (let i = 0; i < 8; i++) {
     const t = (i / 8) * Math.PI * 2 + Math.PI / 8;
     const x = Math.cos(t) * (a + 14);

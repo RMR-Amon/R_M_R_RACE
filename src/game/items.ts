@@ -36,10 +36,8 @@ export function itemBoxAssets() {
         color: '#ffffff',
         emissive: '#ff00ff',
         emissiveIntensity: 0.35,
-        roughness: 0.2,
+        roughness: 0.25,
         metalness: 0.1,
-        transparent: true,
-        opacity: 0.95,
       }),
     };
   }

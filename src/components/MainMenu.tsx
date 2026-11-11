@@ -25,21 +25,21 @@ export default function MainMenu({ save, update, onPlay, onStory, onGarage, onTo
         <header className="flex items-center justify-between gap-2">
           <CoinBadge coins={save.coins} />
           <div className="flex gap-2">
-            <button onClick={() => setSettings(true)} className="btn-ghost !px-3 !py-2 text-xl" aria-label={t('menu.settings')}>
+            <button onClick={() => setSettings(true)} className="btn-ghost !px-2.5 !py-1.5 text-lg sm:!px-3 sm:!py-2 sm:text-xl" aria-label={t('menu.settings')}>
               ⚙️
             </button>
-            <button onClick={onToggleSound} className="btn-ghost !px-3 !py-2 text-xl" aria-label="sound">
+            <button onClick={onToggleSound} className="btn-ghost !px-2.5 !py-1.5 text-lg sm:!px-3 sm:!py-2 sm:text-xl" aria-label="sound">
               {save.muted ? '🔇' : '🔊'}
             </button>
           </div>
         </header>
 
-        <div className="grid flex-1 items-center gap-6 py-4 lg:grid-cols-[1fr_1.1fr]">
-          <div className="order-2 flex flex-col items-center text-center lg:order-1 lg:items-start lg:text-left">
+        <div className="grid flex-1 items-center gap-6 py-4 lg:grid-cols-[1fr_1.1fr] short:grid-cols-[1fr_1fr] short:gap-3 short:py-1">
+          <div className="order-2 flex flex-col items-center text-center lg:order-1 lg:items-start lg:text-left short:order-1">
             <p className="mb-2 animate-slideUp rounded-full bg-white/10 px-4 py-1 text-xs font-extrabold uppercase tracking-[0.3em] text-pink-200 ring-1 ring-white/15">
               {t('menu.tagline')}
             </p>
-            <h1 className="animate-slideUp font-display text-6xl leading-[0.9] sm:text-7xl lg:text-8xl">
+            <h1 className="animate-slideUp font-display text-5xl leading-[0.9] sm:text-7xl lg:text-8xl short:text-5xl">
               <span className="bg-gradient-to-br from-yellow-200 via-orange-400 to-rose-500 bg-clip-text text-transparent drop-shadow-[0_6px_0_rgba(127,29,29,.6)]">
                 R_M_R
               </span>
@@ -48,23 +48,23 @@ export default function MainMenu({ save, update, onPlay, onStory, onGarage, onTo
                 RACE
               </span>
             </h1>
-            <p className="mt-4 max-w-md animate-slideUp text-base text-white/70 sm:text-lg">{t('menu.desc')}</p>
+            <p className="mt-3 max-w-md animate-slideUp text-sm text-white/70 sm:mt-4 sm:text-lg short:hidden">{t('menu.desc')}</p>
 
-            <div className="mt-8 flex w-full max-w-sm flex-col gap-4">
-              <button onClick={onStory} className="btn-primary w-full !py-4 text-2xl">
+            <div className="mt-6 flex w-full max-w-sm flex-col gap-3 sm:mt-8 sm:gap-4 short:mt-3 short:gap-2">
+              <button onClick={onStory} className="btn-primary w-full text-lg sm:!py-3.5 sm:text-xl">
                 {t('menu.story')}
               </button>
               <div className="grid grid-cols-2 gap-3">
-                <button onClick={onPlay} className="btn-ghost w-full !py-4 text-base">
+                <button onClick={onPlay} className="btn-ghost w-full text-sm sm:text-base">
                   {t('menu.play')}
                 </button>
-                <button onClick={onGarage} className="btn-ghost w-full !py-4 text-base">
+                <button onClick={onGarage} className="btn-ghost w-full text-sm sm:text-base">
                   {t('menu.garage')}
                 </button>
               </div>
             </div>
 
-            <div className="mt-6 flex flex-wrap justify-center gap-6 text-sm text-white/60">
+            <div className="mt-5 flex flex-wrap justify-center gap-4 text-xs text-white/60 sm:mt-6 sm:gap-6 sm:text-sm short:mt-3">
               <span>
                 🏁 {t('menu.races')}: <b className="text-white">{save.races}</b>
               </span>
@@ -77,8 +77,8 @@ export default function MainMenu({ save, update, onPlay, onStory, onGarage, onTo
             </div>
           </div>
 
-          <div className="order-1 lg:order-2">
-            <div className="relative mx-auto aspect-[4/3] w-full max-w-xl">
+          <div className="order-1 lg:order-2 short:order-2">
+            <div className="relative mx-auto aspect-[4/3] w-full max-w-xl short:max-h-[62vh] short:w-auto">
               <div className="absolute inset-[12%] rounded-full bg-fuchsia-500/30 blur-3xl" />
               <CarPreview car={car} driver={save.driver} className="absolute inset-0 cursor-grab active:cursor-grabbing" />
               <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-4 py-1 font-display text-sm tracking-wider ring-1 ring-white/15">
@@ -104,7 +104,7 @@ function Settings({ save, update, onClose }: { save: SaveData; update: Props['up
   const toggle = (key: 'mirrors' | 'intro') => update((s) => ({ ...s, [key]: !s[key] }));
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="panel w-full max-w-lg animate-pop space-y-5 p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="panel max-h-[92dvh] w-full max-w-lg animate-pop space-y-4 overflow-y-auto p-5 sm:space-y-5 sm:p-6" onClick={(e) => e.stopPropagation()}>
         <h2 className="font-display text-3xl">{t('settings.title')}</h2>
         <section>
           <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-white/60">{t('settings.language')}</h3>

@@ -53,8 +53,8 @@ export default function Results({ result, totalCoins, passed, onAgain, onNext, o
         <div className="flex w-full justify-end">
           <CoinBadge coins={totalCoins} />
         </div>
-        <div className="mt-2 animate-pop text-7xl sm:text-8xl">{MEDAL[place - 1] ?? '🏁'}</div>
-        <h1 className="mt-2 animate-slideUp bg-gradient-to-b from-yellow-200 to-orange-500 bg-clip-text text-center font-display text-5xl text-transparent sm:text-7xl">
+        <div className="mt-2 animate-pop text-6xl sm:text-8xl short:text-5xl">{MEDAL[place - 1] ?? '🏁'}</div>
+        <h1 className="mt-2 animate-slideUp bg-gradient-to-b from-yellow-200 to-orange-500 bg-clip-text text-center font-display text-4xl text-transparent sm:text-7xl short:text-4xl">
           {title}
         </h1>
         <p className="mt-1 text-center text-white/60">
@@ -79,7 +79,7 @@ export default function Results({ result, totalCoins, passed, onAgain, onNext, o
             <span className="grid h-12 w-12 animate-floaty place-items-center rounded-full bg-gradient-to-b from-yellow-300 to-amber-500 text-2xl font-black text-amber-900 shadow-[0_0_30px_rgba(251,191,36,.7)]">
               $
             </span>
-            <span className="font-display text-6xl tabular-nums text-amber-200">+{shown}</span>
+            <span className="font-display text-5xl tabular-nums text-amber-200 sm:text-6xl">+{shown}</span>
           </div>
           <span className="text-center text-xs text-white/50">{t('res.rewardHint')}</span>
         </div>

@@ -39,8 +39,8 @@ export function ScreenShell({ children, className = '' }: { children: ReactNode;
 
 export function TopBar({ title, onBack, right }: { title: string; onBack: () => void; right?: ReactNode }) {
   return (
-    <div className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-[#0b0820]/70 px-4 py-3 backdrop-blur-md sm:px-8">
-      <button onClick={onBack} className="btn-ghost shrink-0 !px-4 !py-2 text-sm">
+    <div className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-[#0b0820]/70 px-3 py-2 backdrop-blur-md sm:px-8 sm:py-3 [padding-top:max(0.5rem,env(safe-area-inset-top))]">
+      <button onClick={onBack} className="btn-ghost shrink-0 !px-3 !py-1.5 text-sm sm:!px-4 sm:!py-2">
         ←<span className="hidden sm:inline"> {t('common.back')}</span>
       </button>
       <h1 className="truncate font-display text-lg uppercase tracking-wider sm:text-3xl">{title}</h1>
@@ -85,11 +85,11 @@ export function Choice<T extends string | number>({
         <button
           key={String(o.id)}
           onClick={() => onPick(o.id)}
-          className={`rounded-2xl px-4 py-2.5 text-left ring-2 transition ${
+          className={`rounded-xl px-3 py-2 text-left ring-2 transition sm:rounded-2xl sm:px-4 sm:py-2.5 ${
             value === o.id ? 'bg-gradient-to-b from-orange-400 to-rose-600 ring-white' : 'bg-white/5 ring-white/10 hover:bg-white/10'
           }`}
         >
-          <div className="font-display text-base">{o.label}</div>
+          <div className="font-display text-sm sm:text-base">{o.label}</div>
           {o.sub && <div className="max-w-[16rem] text-xs text-white/70">{o.sub}</div>}
         </button>
       ))}

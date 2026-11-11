@@ -3,6 +3,7 @@ import { CARS } from '../data/cars';
 import { DEFAULT_LOOK } from '../data/cosmetics';
 import { detectLang, setLang, type Lang } from '../i18n';
 import type { Accessory, Difficulty, DriverLook, Paint, Quality } from '../game/types';
+import { migratePlain, secureGet, secureSet } from './secure';
 
 export interface SaveData {
   coins: number;
@@ -27,17 +28,21 @@ export interface SaveData {
   storyBest: Record<number, number>;
 }
 
-// key kept from the original name so existing progress is not lost
-const KEY = 'turbo-rush-3d-save-v1';
+/** logical save name — stored under a hashed key, obfuscated and signed (see secure.ts) */
+const SAVE_NAME = 'save';
+/** the old plain-text key; migrated once and then removed */
+const LEGACY_KEY = 'turbo-rush-3d-save-v1';
 
-const isMobile = () => typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && window.innerWidth < 900;
+const isMobile = () =>
+  typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0 && Math.min(window.innerWidth, window.innerHeight) < 900;
 
 const DEFAULT: SaveData = {
   coins: 300,
   owned: CARS.filter((c) => c.price === 0).map((c) => c.id),
   selectedCar: CARS[0].id,
   muted: false,
-  mirrors: true,
+  // three extra scene renders per frame are too much for most phones
+  mirrors: !isMobile(),
   wins: 0,
   races: 0,
   lang: detectLang(),
@@ -53,9 +58,11 @@ const DEFAULT: SaveData = {
 
 function load(): SaveData {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return DEFAULT;
-    const data = { ...DEFAULT, ...JSON.parse(raw) } as SaveData;
+    const stored = secureGet<Partial<SaveData>>(SAVE_NAME) ?? migratePlain<Partial<SaveData>>(LEGACY_KEY, SAVE_NAME);
+    if (!stored || typeof stored !== 'object') return DEFAULT;
+    const data = { ...DEFAULT, ...stored } as SaveData;
+    if (!Array.isArray(data.owned)) data.owned = [...DEFAULT.owned];
+    if (typeof data.coins !== 'number' || !Number.isFinite(data.coins) || data.coins < 0) data.coins = DEFAULT.coins;
     data.driver = { ...DEFAULT_LOOK, ...data.driver };
     // free cars are always owned
     for (const c of CARS) if (c.price === 0 && !data.owned.includes(c.id)) data.owned.push(c.id);
@@ -75,11 +82,7 @@ export function useSave() {
 
   useEffect(() => {
     setLang(save.lang);
-    try {
-      localStorage.setItem(KEY, JSON.stringify(save));
-    } catch {
-      /* storage unavailable (private mode) — progress lives in memory only */
-    }
+    secureSet(SAVE_NAME, save);
   }, [save]);
 
   const update = useCallback((fn: (s: SaveData) => SaveData) => setSave((s) => fn(s)), []);

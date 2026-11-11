@@ -114,7 +114,7 @@ export default function Story({ save, onBack, onPlay }: Props) {
               {!level.items && <div>🚫 {t('story.noItems')}</div>}
               <div className="font-bold text-amber-200">🎯 {level.duel ? t('story.goalDuel') : t('story.goal', { n: level.needPlace })}</div>
               <div className="text-amber-300">🪙 {t('story.reward', { n: fmtNum(level.reward) })}</div>
-              <button disabled={!unlocked(level.n)} onClick={() => onPlay(level)} className="btn-primary mt-3 w-full text-xl">
+              <button disabled={!unlocked(level.n)} onClick={() => onPlay(level)} className="btn-primary mt-3 w-full text-lg sm:text-xl">
                 ▶ {t('story.play')}
               </button>
             </div>

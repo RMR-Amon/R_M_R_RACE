@@ -18,7 +18,9 @@ export class PostFX {
     });
     this.composer = new EffectComposer(renderer, target);
     this.composer.addPass(new RenderPass(scene, camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), quality === 'high' ? 0.55 : 0.45, 0.5, 0.92);
+    // the composer works in linear HDR: a white surface in full sun reaches ~1.0, so the threshold
+    // sits well above it — only real light sources (lamps, exhaust flames, explosions) glow
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), quality === 'high' ? 0.42 : 0.36, 0.45, 1.35);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
   }

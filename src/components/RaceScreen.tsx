@@ -94,22 +94,22 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
       <div className={`pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-2 sm:p-4 [padding-top:max(0.5rem,env(safe-area-inset-top))] ${hud?.phase === 'intro' ? 'invisible' : ''}`}>
         <div className="flex flex-col gap-2">
           {hud && (
-            <div className="rounded-2xl bg-black/45 px-3 py-2 ring-1 ring-white/15 backdrop-blur sm:px-4">
+            <div className="rounded-2xl bg-black/45 px-2.5 py-1.5 ring-1 ring-white/15 backdrop-blur sm:px-4 sm:py-2 short:px-2.5 short:py-1">
               {battle ? (
                 <div className="flex items-baseline gap-2">
-                  <span className="font-display text-3xl text-amber-300 sm:text-5xl">{hud.points}</span>
+                  <span className="font-display text-2xl text-amber-300 sm:text-5xl short:text-3xl">{hud.points}</span>
                   <span className="text-xs font-bold uppercase text-white/60">{t('hud.points')}</span>
                 </div>
               ) : (
                 <div className="flex items-baseline gap-1">
-                  <span className="font-display text-4xl leading-none text-white sm:text-6xl">{hud.place}</span>
-                  <span className="font-display text-lg text-white/60 sm:text-2xl">/{hud.total}</span>
+                  <span className="font-display text-3xl leading-none text-white sm:text-6xl short:text-3xl">{hud.place}</span>
+                  <span className="font-display text-base text-white/60 sm:text-2xl short:text-lg">/{hud.total}</span>
                 </div>
               )}
-              <div className="mt-0.5 text-xs font-bold uppercase tracking-wider text-white/70 sm:text-sm">
+              <div className="mt-0.5 text-[11px] font-bold uppercase tracking-wider text-white/70 sm:text-sm short:text-[11px]">
                 {battle ? `⏱ ${fmtTime(hud.timeLeft).slice(0, -3)}` : t('hud.lap', { lap: hud.lap, laps: hud.laps })}
               </div>
-              {!battle && <div className="font-mono text-xs text-white/60 sm:text-sm">{fmtTime(hud.time)}</div>}
+              {!battle && <div className="font-mono text-[11px] text-white/60 sm:text-sm short:text-[11px]">{fmtTime(hud.time)}</div>}
             </div>
           )}
           {hud && <Standings hud={hud} battle={battle} />}
@@ -120,33 +120,29 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
             <button
               onClick={onToggleMirrors}
               title={t('hud.mirrors')}
-              className={`grid h-10 w-10 place-items-center rounded-xl text-lg ring-1 backdrop-blur ${mirrors ? 'bg-sky-500/40 ring-sky-300/60' : 'bg-black/45 ring-white/15'}`}
+              className={`hud-btn grid place-items-center rounded-xl text-base ring-1 backdrop-blur ${mirrors ? 'bg-sky-500/40 ring-sky-300/60' : 'bg-black/45 ring-white/15'}`}
             >
               🪞
             </button>
-            <button onClick={onToggleSound} className="grid h-10 w-10 place-items-center rounded-xl bg-black/45 text-lg ring-1 ring-white/15 backdrop-blur">
+            <button onClick={onToggleSound} className="hud-btn grid place-items-center rounded-xl bg-black/45 text-base ring-1 ring-white/15 backdrop-blur">
               {muted ? '🔇' : '🔊'}
             </button>
-            <button onClick={() => setPaused(true)} className="grid h-10 w-10 place-items-center rounded-xl bg-black/45 text-lg font-black ring-1 ring-white/15 backdrop-blur">
+            <button onClick={() => setPaused(true)} className="hud-btn grid place-items-center rounded-xl bg-black/45 text-sm font-black ring-1 ring-white/15 backdrop-blur">
               ❚❚
             </button>
           </div>
-          <div className="rounded-2xl bg-black/35 p-1.5 ring-1 ring-white/15 backdrop-blur">
-            <canvas ref={minimap} className="h-24 w-24 sm:h-36 sm:w-36" />
+          <div className="rounded-2xl bg-black/35 p-1 ring-1 ring-white/15 backdrop-blur sm:p-1.5">
+            <canvas ref={minimap} className="minimap" />
           </div>
         </div>
       </div>
 
       {/* -------- top centre: rear-view camera + side mirrors, missile warning, item slot */}
-      <div className="pointer-events-none absolute left-1/2 top-2 flex -translate-x-1/2 flex-col items-center gap-2 sm:top-3 [padding-top:env(safe-area-inset-top)]">
+      <div className="pointer-events-none absolute left-1/2 top-2 flex -translate-x-1/2 flex-col items-center gap-1.5 sm:top-3 sm:gap-2 [padding-top:env(safe-area-inset-top)]">
         <div className={`flex items-start gap-1.5 sm:gap-2.5 ${mirrors && hud?.phase !== 'intro' ? '' : 'hidden'}`}>
-          <MirrorFrame ref={mirrorLeft} className="mt-1 h-[9vw] w-[12vw] sm:h-[min(7vw,86px)] sm:w-[min(11vw,140px)]" />
-          <MirrorFrame
-            ref={mirrorRear}
-            label={t('hud.rear')}
-            className="h-[13vw] w-[40vw] sm:h-[min(9.5vw,118px)] sm:w-[min(32vw,400px)]"
-          />
-          <MirrorFrame ref={mirrorRight} className="mt-1 h-[9vw] w-[12vw] sm:h-[min(7vw,86px)] sm:w-[min(11vw,140px)]" />
+          <MirrorFrame ref={mirrorLeft} className="mirror-side mt-1" />
+          <MirrorFrame ref={mirrorRear} label={t('hud.rear')} className="mirror-rear" />
+          <MirrorFrame ref={mirrorRight} className="mirror-side mt-1" />
         </div>
         {hud?.incoming && <MissileWarning time={hud.incoming.time} dist={hud.incoming.dist} touch={touch} />}
         {hud && hud.phase !== 'intro' && <ItemSlot hud={hud} touch={touch} onUse={() => gameRef.current?.input.fire()} />}
@@ -162,14 +158,14 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
 
       {/* -------- speedometer */}
       {hud && (
-        <div className={`pointer-events-none absolute ${touch ? 'bottom-48 right-1/2 translate-x-1/2' : 'bottom-5 right-5'} text-right`}>
+        <div className={`pointer-events-none absolute ${touch ? 'speedo-touch left-1/2 -translate-x-1/2' : 'bottom-5 right-5'} text-right`}>
           <div className="flex items-baseline justify-end gap-1">
-            <span className={`font-display text-5xl tabular-nums text-outline sm:text-6xl ${hud.boost > 0 ? 'text-amber-300' : 'text-white'}`}>
+            <span className={`font-display text-4xl tabular-nums text-outline sm:text-6xl short:text-4xl ${hud.boost > 0 ? 'text-amber-300' : 'text-white'}`}>
               {hud.speedKmh}
             </span>
             <span className="text-sm font-bold text-white/70">{t('hud.kmh')}</span>
             {hud.phase !== 'intro' && (
-              <span className="ml-1 grid h-9 w-9 place-items-center rounded-xl bg-black/50 font-display text-xl text-white ring-1 ring-white/20" title={t('hud.gear')}>
+              <span className="ml-1 grid h-8 w-8 place-items-center rounded-xl bg-black/50 font-display text-lg text-white ring-1 ring-white/20 sm:h-9 sm:w-9 sm:text-xl" title={t('hud.gear')}>
                 {hud.speedKmh < 1 && hud.gear === 1 ? 'N' : hud.gear}
               </span>
             )}
@@ -197,7 +193,7 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
       {hud?.phase === 'intro' && (
         <>
           <div className="pointer-events-none absolute inset-x-0 top-[18%] flex justify-center px-4">
-            <span className="animate-pop rounded-2xl bg-black/50 px-6 py-3 text-center font-display text-3xl text-white text-outline ring-1 ring-white/20 backdrop-blur sm:text-5xl">
+            <span className="animate-pop rounded-2xl bg-black/50 px-5 py-2 text-center font-display text-2xl text-white text-outline ring-1 ring-white/20 backdrop-blur sm:px-6 sm:py-3 sm:text-5xl short:text-3xl">
               {t('hud.ready')}
             </span>
           </div>
@@ -215,7 +211,7 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
       {/* -------- countdown + toasts */}
       {hud && hud.phase === 'countdown' && hud.countdown > 0 && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
-          <span key={hud.countdown} className="animate-pop font-display text-[9rem] leading-none text-white text-outline sm:text-[12rem]">
+          <span key={hud.countdown} className="animate-pop font-display text-[clamp(4.5rem,24vmin,12rem)] leading-none text-white text-outline">
             {hud.countdown}
           </span>
         </div>
@@ -269,7 +265,7 @@ function MissileWarning({ time, dist, touch }: { time: number; dist: number; tou
 
 function Standings({ hud, battle }: { hud: HudState; battle: boolean }) {
   return (
-    <div className="hidden w-44 overflow-hidden rounded-2xl bg-black/40 ring-1 ring-white/10 backdrop-blur sm:block">
+    <div className="hidden w-44 overflow-hidden rounded-2xl bg-black/40 ring-1 ring-white/10 backdrop-blur sm:block short:hidden">
       {hud.standings.map((s) => (
         <div
           key={s.id}
@@ -301,7 +297,7 @@ function ItemSlot({ hud, touch, onUse }: { hud: HudState; touch: boolean; onUse:
     <div className={touch ? 'pointer-events-none' : 'pointer-events-auto'}>
       <button
         onClick={onUse}
-        className={`relative grid h-16 w-16 place-items-center rounded-2xl text-4xl ring-4 backdrop-blur transition sm:h-24 sm:w-24 sm:text-6xl ${
+        className={`item-slot relative grid place-items-center rounded-2xl ring-[3px] backdrop-blur transition ${
           ready ? 'animate-pulse bg-white/25 ring-yellow-300' : 'bg-black/40 ring-white/20'
         }`}
         style={ready && info ? { boxShadow: `0 0 30px ${info.color}` } : undefined}
@@ -334,7 +330,7 @@ function Toast({ text, id }: { text: string; id: number }) {
   if (!visible || !text) return null;
   return (
     <div className="pointer-events-none absolute inset-x-0 top-[26%] flex justify-center px-4">
-      <span key={id} className="animate-pop rounded-2xl bg-black/50 px-5 py-2 text-center font-display text-2xl text-white text-outline ring-1 ring-white/20 backdrop-blur sm:text-4xl">
+      <span key={id} className="animate-pop rounded-2xl bg-black/50 px-4 py-1.5 text-center font-display text-xl text-white text-outline ring-1 ring-white/20 backdrop-blur sm:px-5 sm:py-2 sm:text-4xl short:text-2xl">
         {text}
       </span>
     </div>
@@ -373,30 +369,30 @@ function HoldButton({
 }
 
 function TouchControls({ input }: { input: Input }) {
-  const base = 'grid place-items-center rounded-full font-display text-white ring-2 ring-white/30 backdrop-blur-md shadow-xl';
+  const base = 'grid place-items-center rounded-full font-display text-white ring-2 ring-white/25 backdrop-blur-md shadow-lg';
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between p-4 [padding-bottom:max(1rem,env(safe-area-inset-bottom))]">
-      <div className="pointer-events-auto flex gap-3">
-        <HoldButton onChange={(v) => (input.touch.left = v)} className={`${base} h-20 w-20 bg-white/15 text-3xl sm:h-24 sm:w-24`}>
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 px-3 pt-3 [padding-bottom:max(0.75rem,env(safe-area-inset-bottom))] [padding-left:max(0.75rem,env(safe-area-inset-left))] [padding-right:max(0.75rem,env(safe-area-inset-right))]">
+      <div className="pointer-events-auto flex gap-2.5">
+        <HoldButton onChange={(v) => (input.touch.left = v)} className={`${base} tc-md bg-white/15 text-xl`}>
           ◀
         </HoldButton>
-        <HoldButton onChange={(v) => (input.touch.right = v)} className={`${base} h-20 w-20 bg-white/15 text-3xl sm:h-24 sm:w-24`}>
+        <HoldButton onChange={(v) => (input.touch.right = v)} className={`${base} tc-md bg-white/15 text-xl`}>
           ▶
         </HoldButton>
       </div>
-      <div className="pointer-events-auto flex items-end gap-3">
-        <div className="flex flex-col items-center gap-3">
-          <HoldButton onChange={(v) => v && input.fire()} className={`${base} h-16 w-16 bg-fuchsia-500/50 text-2xl`}>
+      <div className="pointer-events-auto flex items-end gap-2">
+        <div className="flex flex-col items-center gap-2">
+          <HoldButton onChange={(v) => v && input.fire()} className={`${base} tc-sm bg-fuchsia-500/50 text-lg`}>
             🎯
           </HoldButton>
-          <HoldButton onChange={(v) => (input.touch.brake = v)} className={`${base} h-16 w-16 bg-rose-600/50 text-sm`}>
+          <HoldButton onChange={(v) => (input.touch.brake = v)} className={`${base} tc-sm bg-rose-600/50 text-[10px]`}>
             {t('touch.brake')}
           </HoldButton>
         </div>
-        <HoldButton onChange={(v) => (input.touch.drift = v)} className={`${base} h-16 w-16 bg-orange-500/50 text-xs`}>
+        <HoldButton onChange={(v) => (input.touch.drift = v)} className={`${base} tc-sm bg-orange-500/50 text-[10px]`}>
           {t('touch.drift')}
         </HoldButton>
-        <HoldButton onChange={(v) => (input.touch.gas = v)} className={`${base} h-24 w-24 bg-emerald-500/50 text-lg sm:h-28 sm:w-28`}>
+        <HoldButton onChange={(v) => (input.touch.gas = v)} className={`${base} tc-lg bg-emerald-500/50 text-sm`}>
           {t('touch.gas')}
         </HoldButton>
       </div>

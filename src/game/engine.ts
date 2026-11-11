@@ -58,6 +58,12 @@ const GOOD_DRIFT = 0.55;
 const FLY_HEIGHT = 6.5;
 /** on "impossible" the race can only be won with at most this many mistakes */
 const MAX_MISTAKES = 3;
+/** a missile target must be at least this far ahead of the shooter along the road (m) */
+const MISSILE_MIN_LEAD = 7;
+/** how far down the road a missile can lock on (m) */
+const MISSILE_RANGE = 380;
+/** widest angle (rad) a missile may fly away from the road direction — it can never turn back */
+const MISSILE_MAX_ANGLE = 1.0;
 
 interface DiffTuning {
   /** fraction of the car's top speed the bot aims for */
@@ -195,11 +201,11 @@ interface Projectile {
   /** track distance / lateral offset of the missile */
   d: number;
   lat: number;
-  /** +1 flies with the race direction, -1 against it */
-  dir: number;
   /** racer that escaped this missile with a drift (can no longer be hit by it) */
   dodged: Racer | null;
   label: ReturnType<typeof makeLabel> | null;
+  /** seconds until an unlocked missile looks for a new target ahead of it */
+  retargetT: number;
 }
 
 interface Debris {
@@ -225,6 +231,9 @@ interface Hazard {
   x: number;
   y: number;
   z: number;
+  /** road position (hazards never move, so this is computed once) */
+  d: number;
+  lat: number;
   armT: number;
   mesh: THREE.Group;
   t: number;
@@ -238,7 +247,8 @@ interface ItemBox {
   d: number;
   active: boolean;
   respawn: number;
-  mesh: THREE.Mesh;
+  /** grow-in animation after a respawn (1 = full size) */
+  scale: number;
 }
 
 interface Flash {
@@ -276,6 +286,8 @@ export class Game {
   private projectiles: Projectile[] = [];
   private hazards: Hazard[] = [];
   private boxes: ItemBox[] = [];
+  /** all lucky blocks are drawn with one instanced mesh */
+  private boxMesh: THREE.InstancedMesh | null = null;
   private flashes: Flash[] = [];
   private debris: Debris[] = [];
   private debrisGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -295,6 +307,18 @@ export class Game {
   private prevThrottle = 0;
   private raf = 0;
   private last = 0;
+  /** dynamic resolution */
+  private ratio = 1;
+  private minRatio = 1;
+  private maxRatio = 1;
+  private frameAvg = 1 / 60;
+  private ratioCooldown = 3;
+  private slowT = 0;
+  private fastT = 0;
+  /** mirror rectangles in canvas pixels, refreshed on layout changes (no per-frame DOM reads) */
+  private mirrorRects: { cam: THREE.PerspectiveCamera; x: number; y: number; w: number; h: number }[] = [];
+  private orientTimer = 0;
+  private minimapT = 0;
   private time = 0;
   private raceTime = 0;
   private countdown = 4;
@@ -321,6 +345,11 @@ export class Game {
   private readonly duration: number;
   private readonly mapName: string;
   private tmpV = new THREE.Vector3();
+  private tmpS = new THREE.Vector3();
+  private tmpQ = new THREE.Quaternion();
+  private tmpE = new THREE.Euler();
+  private tmpM = new THREE.Matrix4();
+  private tmpV2 = new THREE.Vector2();
   private cfg: RaceConfig;
   private cb: GameCallbacks;
   private container: HTMLElement;
@@ -353,9 +382,13 @@ export class Game {
     // ---------- renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     const maxRatio = q === 'low' ? 1 : q === 'medium' ? 1.5 : mobile ? 1.75 : 2;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxRatio));
+    this.maxRatio = Math.min(window.devicePixelRatio, maxRatio);
+    // dynamic resolution may drop to here when the device cannot keep up
+    this.minRatio = Math.min(this.maxRatio, q === 'low' ? 0.6 : 0.75);
+    this.ratio = this.maxRatio;
+    this.renderer.setPixelRatio(this.ratio);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = q === 'low' ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = q === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
     // refreshed once per frame for the main view and reused by the mirror views
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -383,6 +416,17 @@ export class Game {
     this.scene.add(this.visuals.group);
     this.env = buildEnvironment(this.scene, this.track, theme, map.seed);
     if (q !== 'high') this.env.sun.shadow.mapSize.set(q === 'low' ? 1024 : 1536, q === 'low' ? 1024 : 1536);
+    // scenery (spectators, trees, buildings...) lives on layer 1: the main camera sees it, the small
+    // mirror views skip it, which removes most of their draw calls
+    this.env.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh && !(o as THREE.Points).isPoints) return;
+      if (o.renderOrder === -10) return; // the sky stays visible everywhere
+      o.layers.set(1);
+      // on lower quality the scenery does not cast shadows
+      if (q !== 'high') m.castShadow = false;
+    });
+    this.camera.layers.enable(1);
     this.scene.add(this.skids.mesh);
     if (q !== 'low') this.post = new PostFX(this.renderer, this.scene, this.camera, q);
     this.particles = new Particles(2500, true);
@@ -403,6 +447,10 @@ export class Game {
 
     this.resizeObs = new ResizeObserver(() => this.resize());
     this.resizeObs.observe(container);
+    if (mirrors) for (const el of [mirrors.left, mirrors.rear, mirrors.right]) this.resizeObs.observe(el);
+    // phones: a rotation can finish its layout after the resize event, so re-measure a bit later too
+    window.addEventListener('orientationchange', this.onOrientation);
+    window.visualViewport?.addEventListener('resize', this.onOrientation);
     this.resize();
 
     this.input.onPause = () => this.cb.onPauseRequest();
@@ -427,30 +475,29 @@ export class Game {
 
   private buildItemBoxes() {
     if (!this.cfg.items) return;
-    const { box, boxMat } = itemBoxAssets();
+    const add = (x: number, z: number, lat: number, d: number) =>
+      this.boxes.push({ x, y: 1.6, z, lat, d, active: true, respawn: 0, scale: 1 });
     if (this.track.oval) {
-      for (const p of this.track.arenaBoxes) {
-        const mesh = new THREE.Mesh(box, boxMat);
-        mesh.position.set(p.x, 1.6, p.z);
-        mesh.castShadow = true;
-        this.scene.add(mesh);
-        this.boxes.push({ x: p.x, y: 1.6, z: p.z, lat: 0, d: -1, active: true, respawn: 0, mesh });
-      }
-      return;
-    }
-    const hw = this.track.halfWidth;
-    const lats = this.battle ? [-0.7, -0.42, -0.14, 0.14, 0.42, 0.7] : [-0.66, -0.33, 0, 0.33, 0.66];
-    for (const d of this.track.itemRows) {
-      for (const f of lats) {
-        const lat = f * hw;
-        const p = this.track.pointAt(d, lat);
-        const mesh = new THREE.Mesh(box, boxMat);
-        mesh.position.set(p.x, 1.6, p.z);
-        mesh.castShadow = true;
-        this.scene.add(mesh);
-        this.boxes.push({ x: p.x, y: 1.6, z: p.z, lat, d, active: true, respawn: 0, mesh });
+      for (const p of this.track.arenaBoxes) add(p.x, p.z, 0, -1);
+    } else {
+      const hw = this.track.halfWidth;
+      const lats = this.battle ? [-0.7, -0.42, -0.14, 0.14, 0.42, 0.7] : [-0.66, -0.33, 0, 0.33, 0.66];
+      for (const d of this.track.itemRows) {
+        for (const f of lats) {
+          const lat = f * hw;
+          const p = this.track.pointAt(d, lat);
+          add(p.x, p.z, lat, d);
+        }
       }
     }
+    if (!this.boxes.length) return;
+    const { box, boxMat } = itemBoxAssets();
+    const mesh = new THREE.InstancedMesh(box, boxMat, this.boxes.length);
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.boxMesh = mesh;
+    this.scene.add(mesh);
   }
 
   private spawnRacers() {
@@ -647,6 +694,8 @@ export class Game {
 
   setMirrors(on: boolean) {
     this.mirrorsOn = on;
+    // the frames appear / disappear with the setting: measure them once the layout has updated
+    requestAnimationFrame(() => this.measureMirrors());
   }
 
   setPaused(p: boolean) {
@@ -663,6 +712,9 @@ export class Game {
     cancelAnimationFrame(this.raf);
     this.input.detach();
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('orientationchange', this.onOrientation);
+    window.visualViewport?.removeEventListener('resize', this.onOrientation);
+    clearTimeout(this.orientTimer);
     this.resizeObs.disconnect();
     audio.stopEngine();
     this.scene.traverse((o) => {
@@ -698,9 +750,16 @@ export class Game {
     if (document.hidden && !this.ended && !this.paused) this.cb.onPauseRequest();
   };
 
+  private onOrientation = () => {
+    this.resize();
+    clearTimeout(this.orientTimer);
+    this.orientTimer = window.setTimeout(() => this.resize(), 350);
+  };
+
   private resize() {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
+    this.renderer.setPixelRatio(this.ratio);
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -708,6 +767,60 @@ export class Game {
     const ph = h * this.renderer.getPixelRatio();
     this.particles.setScale(ph);
     this.smoke.setScale(ph);
+    this.measureMirrors();
+  }
+
+  /** caches where the mirror frames sit on the canvas (CSS pixels) */
+  private measureMirrors() {
+    const views = this.mirrorViews;
+    this.mirrorRects = [];
+    if (!views) return;
+    const cr = this.container.getBoundingClientRect();
+    const list: [HTMLElement, THREE.PerspectiveCamera][] = [
+      [views.rear, this.mirrorCams.rear],
+      [views.left, this.mirrorCams.left],
+      [views.right, this.mirrorCams.right],
+    ];
+    for (const [el, cam] of list) {
+      const b = el.getBoundingClientRect();
+      if (b.width < 8 || b.height < 8) continue;
+      const x = b.left - cr.left;
+      const y = cr.height - (b.top - cr.top) - b.height;
+      this.mirrorRects.push({ cam, x, y, w: b.width, h: b.height });
+      const aspect = b.width / b.height;
+      if (Math.abs(cam.aspect - aspect) > 0.01) {
+        cam.aspect = aspect;
+        cam.updateProjectionMatrix();
+      }
+    }
+  }
+
+  /**
+   * Dynamic resolution: when frames take too long for a while the render resolution steps down,
+   * and it steps back up once there is headroom again, so the game stays smooth on slow devices.
+   */
+  private adaptResolution(rawDt: number) {
+    this.frameAvg += (Math.min(rawDt, 0.1) - this.frameAvg) * 0.05;
+    this.ratioCooldown -= rawDt;
+    if (this.ratioCooldown > 0) return;
+    if (this.frameAvg > 1 / 48) {
+      this.slowT += rawDt;
+      this.fastT = 0;
+    } else if (this.frameAvg < 1 / 57) {
+      this.fastT += rawDt;
+      this.slowT = 0;
+    } else {
+      this.slowT = this.fastT = 0;
+    }
+    let next = this.ratio;
+    if (this.slowT > 1.2 && this.ratio > this.minRatio + 0.01) next = Math.max(this.minRatio, this.ratio * 0.85);
+    else if (this.fastT > 5 && this.ratio < this.maxRatio - 0.01) next = Math.min(this.maxRatio, this.ratio * 1.1);
+    if (next !== this.ratio) {
+      this.ratio = next;
+      this.slowT = this.fastT = 0;
+      this.ratioCooldown = 2.5;
+      this.resize();
+    }
   }
 
   // ======================================================================== main loop
@@ -716,6 +829,7 @@ export class Game {
     this.raf = requestAnimationFrame(this.frame);
     let dt = (now - this.last) / 1000;
     this.last = now;
+    if (!this.paused && dt > 0 && dt < 0.5) this.adaptResolution(dt);
     if (dt > 0.05) dt = 0.05;
     if (dt <= 0) return;
     if (!this.paused) {
@@ -733,8 +847,7 @@ export class Game {
 
   /** Rear-view camera + both side mirrors, rendered into the frames at the top of the HUD */
   private renderMirrors() {
-    const views = this.mirrorViews!;
-    const cr = this.container.getBoundingClientRect();
+    if (!this.mirrorRects.length) return;
     const p = this.player;
     const fx = Math.sin(p.heading);
     const fz = Math.cos(p.heading);
@@ -759,27 +872,14 @@ export class Game {
     this.particles.points.visible = false;
     this.smoke.points.visible = false;
     r.setScissorTest(true);
-    const list: [HTMLElement, THREE.PerspectiveCamera][] = [
-      [views.rear, cams.rear],
-      [views.left, cams.left],
-      [views.right, cams.right],
-    ];
-    for (const [el, cam] of list) {
-      const b = el.getBoundingClientRect();
-      if (b.width < 8 || b.height < 8) continue;
-      const x = b.left - cr.left;
-      const yy = cr.height - (b.top - cr.top) - b.height;
-      r.setViewport(x, yy, b.width, b.height);
-      r.setScissor(x, yy, b.width, b.height);
-      const aspect = b.width / b.height;
-      if (Math.abs(cam.aspect - aspect) > 0.01) {
-        cam.aspect = aspect;
-        cam.updateProjectionMatrix();
-      }
-      r.render(this.scene, cam);
+    for (const m of this.mirrorRects) {
+      r.setViewport(m.x, m.y, m.w, m.h);
+      r.setScissor(m.x, m.y, m.w, m.h);
+      r.render(this.scene, m.cam);
     }
     r.setScissorTest(false);
-    r.setViewport(0, 0, cr.width, cr.height);
+    const size = r.getSize(this.tmpV2);
+    r.setViewport(0, 0, size.x, size.y);
     this.particles.points.visible = true;
     this.smoke.points.visible = true;
   }
@@ -962,9 +1062,12 @@ export class Game {
       r.z -= s.nz * side * over;
       const vn = (r.vx * s.nx + r.vz * s.nz) * side;
       if (vn > 0) {
-        r.vx -= s.nx * side * vn * 1.4;
-        r.vz -= s.nz * side * vn * 1.4;
-        r.speed *= Math.max(0.6, 1 - vn * 0.022);
+        // with a shield the car glances off the wall without losing speed
+        const shielded = r.shieldT > 0;
+        const bounce = shielded ? 1 : 1.4;
+        r.vx -= s.nx * side * vn * bounce;
+        r.vz -= s.nz * side * vn * bounce;
+        if (!shielded) r.speed *= Math.max(0.6, 1 - vn * 0.022);
         const th = Math.atan2(s.tx, s.tz) + (r.speed < 0 ? Math.PI : 0);
         r.heading += wrapAngle(th - r.heading) * Math.min(0.5, vn * 0.03);
         if (vn > 3 && !r.airborne) {
@@ -975,7 +1078,7 @@ export class Game {
             this.shake = Math.max(this.shake, Math.min(0.6, vn * 0.05));
             audio.crash();
             r.hitCooldown = 0.4;
-            if (vn > 10) this.addMistake();
+            if (vn > 10 && !shielded) this.addMistake();
           }
         }
       }
@@ -1056,9 +1159,11 @@ export class Game {
     nz /= nl;
     const vn = r.vx * nx + r.vz * nz;
     if (vn <= 0) return;
-    r.vx -= nx * vn * 1.4;
-    r.vz -= nz * vn * 1.4;
-    r.speed *= Math.max(0.6, 1 - vn * 0.022);
+    const shielded = r.shieldT > 0;
+    const bounce = shielded ? 1 : 1.4;
+    r.vx -= nx * vn * bounce;
+    r.vz -= nz * vn * bounce;
+    if (!shielded) r.speed *= Math.max(0.6, 1 - vn * 0.022);
     // turn the nose along the wall
     let tx = -nz;
     let tz = nx;
@@ -1256,7 +1361,6 @@ export class Game {
       if (dx * dx + dz * dz > 2.9 * 2.9 || Math.abs(r.y + 1 - box.y) > 3) continue;
       box.active = false;
       box.respawn = this.battle ? 2.5 : 4;
-      box.mesh.visible = false;
       this.particles.burst(box.x, box.y, box.z, 26, 9, ['#f472b6', '#22d3ee', '#facc15', '#a3e635'], 0.7, 0.6, 6);
       if (!r.item && r.rouletteT <= 0) {
         this.stats.boxes++;
@@ -1278,10 +1382,9 @@ export class Game {
     const dirX = hitSpeed > 0.5 ? r.vx / hitSpeed : Math.sin(r.heading);
     const dirZ = hitSpeed > 0.5 ? r.vz / hitSpeed : Math.cos(r.heading);
     const cap = BARRIER_SLOW_KMH / 3.6;
-    if (r.shieldT > 0) {
-      r.speed *= 0.7;
-      r.vx *= 0.7;
-      r.vz *= 0.7;
+    const shielded = r.shieldT > 0;
+    if (shielded) {
+      // the shield ploughs straight through: no speed lost, boost kept
     } else {
       r.speed = clamp(r.speed, -cap, cap);
       if (hitSpeed > cap) {
@@ -1323,10 +1426,14 @@ export class Game {
     this.particles.burst(b.x, 1, b.z, 30, 12, ['#ffd166', '#ff7b00', '#ffffff'], 0.6, 0.5, 16);
     this.smoke.burst(b.x, 1, b.z, 12, 4, ['#9ca3af', '#6b7280'], 2.2, 0.9, -1);
     if (r.isPlayer) {
-      this.shake = Math.max(this.shake, 0.7);
+      this.shake = Math.max(this.shake, shielded ? 0.2 : 0.7);
       audio.smash();
-      this.flash(t('msg.barrier'));
-      this.addMistake();
+      if (shielded) {
+        this.particles.burst(r.x, r.y + 1.2, r.z, 24, 9, ['#7dd3fc', '#ffffff'], 0.6, 0.45);
+      } else {
+        this.flash(t('msg.barrier'));
+        this.addMistake();
+      }
     } else if (this.near(r, 70)) audio.smash();
   }
 
@@ -1433,47 +1540,48 @@ export class Game {
   // ======================================================================== items
 
   /**
-   * Nearest rival measured along the road. The missile normally flies with the race
-   * direction; it is fired backwards only when the closest rival is clearly behind.
+   * The missile only ever flies FORWARD. Its target is the nearest rival that is clearly in front
+   * along the road: at least MISSILE_MIN_LEAD metres ahead of `fromD`, so a car driving level with
+   * the shooter is skipped (it would be behind the missile's launch point). The leader has nobody
+   * in front, so the missile is fired straight down the road without a lock.
    */
-  private findMissileTarget(r: Racer): { target: Racer | null; dir: number } {
+  private findMissileTarget(
+    r: Racer,
+    opts: { from?: { x: number; z: number; heading: number; d: number }; minLead?: number; range?: number; exclude?: Racer | null } = {},
+  ): Racer | null {
     const tr = this.track;
+    const from = opts.from ?? { x: r.x, z: r.z, heading: r.heading, d: r.lastD };
+    const minLead = opts.minLead ?? MISSILE_MIN_LEAD;
+    const range = opts.range ?? MISSILE_RANGE;
+    const exclude = opts.exclude ?? null;
     let best: Racer | null = null;
-    let bestD = Infinity;
-    let dir = 1;
     if (tr.oval) {
-      // open arena: nearest rival, preferring the ones in front
-      const fx = Math.sin(r.heading);
-      const fz = Math.cos(r.heading);
+      // open arena: nearest rival inside a forward cone
+      const fx = Math.sin(from.heading);
+      const fz = Math.cos(from.heading);
+      let bestD = range;
       for (const o of this.racers) {
-        if (o === r || o.fallingT > 0 || o.flyT > 0) continue;
-        const dx = o.x - r.x;
-        const dz = o.z - r.z;
+        if (o === r || o === exclude || o.fallingT > 0 || o.flyT > 0) continue;
+        const dx = o.x - from.x;
+        const dz = o.z - from.z;
         const dist = Math.hypot(dx, dz);
-        const score = dist * ((dx * fx + dz * fz) / (dist || 1) > 0 ? 1 : 1.8);
-        if (score < bestD) {
-          bestD = score;
+        if (dist < 4 || (dx * fx + dz * fz) / dist < 0.45) continue;
+        if (dist < bestD) {
+          bestD = dist;
           best = o;
         }
       }
-      return { target: best, dir: 1 };
+      return best;
     }
+    let bestA = range;
     for (const o of this.racers) {
-      if (o === r || o.fallingT > 0 || o.flyT > 0 || (o.finished && !this.battle)) continue;
-      const fwd = tr.ahead(r.lastD, o.lastD);
-      const back = (tr.length - fwd) * 1.3;
-      if (fwd < bestD) {
-        bestD = fwd;
-        best = o;
-        dir = 1;
-      }
-      if (back < bestD) {
-        bestD = back;
-        best = o;
-        dir = -1;
-      }
+      if (o === r || o === exclude || o.fallingT > 0 || o.flyT > 0 || (o.finished && !this.battle)) continue;
+      const a = tr.ahead(from.d, o.lastD);
+      if (a < minLead || a > bestA) continue;
+      bestA = a;
+      best = o;
     }
-    return { target: best, dir };
+    return best;
   }
 
   private useItem(r: Racer) {
@@ -1485,7 +1593,7 @@ export class Game {
     this.stats.items++;
     switch (item) {
       case 'missile': {
-        const { target, dir } = this.findMissileTarget(r);
+        const target = this.findMissileTarget(r);
         const mesh = makeMissile();
         // fuse countdown floating above the missile
         const label = makeLabel(150, 60);
@@ -1493,14 +1601,21 @@ export class Game {
         label.sprite.position.y = 1.5;
         mesh.add(label.sprite);
         this.scene.add(mesh);
-        const sx = r.x + fx * 3.2 * dir;
-        const sz = r.z + fz * 3.2 * dir;
+        // launched from the nose, pointing down the road (never backwards, even if the car is sideways)
+        const sx = r.x + fx * 3.2;
+        const sz = r.z + fz * 3.2;
         const pr = this.track.project(sx, sz, r.trackIndex);
+        let heading = r.heading;
+        if (!this.track.oval) {
+          const s = this.track.samples[pr.index];
+          const road = Math.atan2(s.tx, s.tz);
+          heading = road + clamp(wrapAngle(r.heading - road), -0.5, 0.5);
+        }
         this.projectiles.push({
           kind: 'missile', owner: r, target,
-          x: sx, y: r.y + 1.3, z: sz, heading: r.heading + (dir < 0 ? Math.PI : 0),
-          speed: Math.max(45, (dir > 0 ? r.speed : 0) + 18), life: MISSILE_FUSE,
-          index: pr.index, mesh, d: pr.d, lat: pr.lat, dir, dodged: null, label,
+          x: sx, y: r.y + 1.3, z: sz, heading,
+          speed: Math.max(55, Math.max(0, r.speed) + 22), life: MISSILE_FUSE,
+          index: pr.index, mesh, d: pr.d, lat: pr.lat, dodged: null, label, retargetT: 0,
         });
         if (r.isPlayer || this.near(r, 60)) audio.shoot();
         break;
@@ -1511,7 +1626,7 @@ export class Game {
         this.projectiles.push({
           kind: 'ice', owner: r, target: null,
           x: r.x + fx * 3, y: r.y + 1.2, z: r.z + fz * 3, heading: r.heading, speed: Math.max(80, r.speed + 40), life: 1.5,
-          index: r.trackIndex, mesh, d: r.lastD, lat: r.lat, dir: 1, dodged: null, label: null,
+          index: r.trackIndex, mesh, d: r.lastD, lat: r.lat, dodged: null, label: null, retargetT: 0,
         });
         r.itemCharges--;
         consumed = r.itemCharges <= 0;
@@ -1527,7 +1642,7 @@ export class Game {
         const y = this.track.groundAt(pr.d);
         mesh.position.set(x, Math.max(0, y), z);
         this.scene.add(mesh);
-        this.hazards.push({ kind: item, owner: r, x, y: Math.max(0, y), z, armT: 0.6, mesh, t: 0 });
+        this.hazards.push({ kind: item, owner: r, x, y: Math.max(0, y), z, d: pr.d, lat: pr.lat, armT: 0.6, mesh, t: 0 });
         // keep the track from filling up
         if (this.hazards.length > 14) this.removeHazard(this.hazards[0]);
         if (r.isPlayer) audio.drop();
@@ -1662,7 +1777,7 @@ export class Game {
           p.x -= s.nx * side * over;
           p.z -= s.nz * side * over;
           p.lat = side * lim;
-          const along = Math.atan2(s.tx, s.tz) + (p.dir < 0 ? Math.PI : 0);
+          const along = Math.atan2(s.tx, s.tz);
           p.heading += wrapAngle(along - p.heading) * 0.5;
         }
         p.label?.draw(`⏱ ${Math.max(0, p.life).toFixed(1)}`, p.life < 2 ? '#dc2626' : '#111827');
@@ -1713,21 +1828,47 @@ export class Game {
     }
   }
 
-  /** Steering of a homing missile: follows the road towards the target, direct lock only on final approach */
+  /**
+   * Steering of a homing missile: it follows the road towards a target in FRONT of it and switches
+   * to a direct lock only on the final approach. It never turns back: a target that falls behind
+   * the missile is dropped, and the heading is clamped to the road direction.
+   */
   private steerMissile(p: Projectile, dt: number) {
     const tr = this.track;
     const hw = tr.halfWidth;
-    p.speed = Math.min(70, p.speed + 30 * dt);
+    p.speed = Math.min(85, p.speed + 30 * dt);
     if (p.target && (p.target.fallingT > 0 || p.target.flyT > 0)) p.target = null;
+    // the target slipped behind the missile (it braked hard or was overtaken): let it go
+    if (p.target) {
+      if (tr.oval) {
+        const dx = p.target.x - p.x;
+        const dz = p.target.z - p.z;
+        const dl = Math.hypot(dx, dz) || 1;
+        if ((dx * Math.sin(p.heading) + dz * Math.cos(p.heading)) / dl < -0.2) p.target = null;
+      } else if (tr.ahead(p.d, p.target.lastD) > tr.length / 2) p.target = null;
+    }
+    // an unlocked missile keeps scanning the road ahead of itself
+    if (!p.target) {
+      p.retargetT -= dt;
+      if (p.retargetT <= 0) {
+        p.retargetT = 0.25;
+        p.target = this.findMissileTarget(p.owner, {
+          from: { x: p.x, z: p.z, heading: p.heading, d: p.d },
+          minLead: 2,
+          range: 160,
+          exclude: p.dodged,
+        });
+      }
+    }
     const t = p.target;
     let ax: number;
     let az: number;
     let turn = 4.5;
     if (t) {
       const dist = Math.hypot(t.x - p.x, t.z - p.z);
-      const along = p.dir > 0 ? tr.ahead(p.d, t.lastD) : tr.ahead(t.lastD, p.d);
+      const along = tr.ahead(p.d, t.lastD);
       // in the open arena there is no road to follow: home in directly
-      if (tr.oval || dist < 10 || (dist < 28 && along < 40)) {
+      if (tr.oval || (dist < 28 && along < 45)) {
         // final approach: direct homing with a limited turn rate
         ax = t.x + t.vx * 0.08;
         az = t.z + t.vz * 0.08;
@@ -1747,7 +1888,7 @@ export class Game {
         const look = 14 + p.speed * 0.25;
         const k = clamp(1 - along / 140, 0.1, 1);
         const lat = clamp(p.lat + (t.lat - p.lat) * k, -hw + 1, hw - 1);
-        const pt = tr.pointAt(p.d + p.dir * look, lat);
+        const pt = tr.pointAt(p.d + look, lat);
         ax = pt.x;
         az = pt.z;
       }
@@ -1755,11 +1896,17 @@ export class Game {
       ax = p.x + Math.sin(p.heading) * 20;
       az = p.z + Math.cos(p.heading) * 20;
     } else {
-      const pt = tr.pointAt(p.d + p.dir * 20, clamp(p.lat, -hw + 1.5, hw - 1.5));
+      const pt = tr.pointAt(p.d + 20, clamp(p.lat, -hw + 1.5, hw - 1.5));
       ax = pt.x;
       az = pt.z;
     }
-    const desired = Math.atan2(ax - p.x, az - p.z);
+    let desired = Math.atan2(ax - p.x, az - p.z);
+    if (!tr.oval) {
+      // forward only: never point more than MISSILE_MAX_ANGLE away from the direction of the road
+      const s = tr.samples[p.index];
+      const road = Math.atan2(s.tx, s.tz);
+      desired = road + clamp(wrapAngle(desired - road), -MISSILE_MAX_ANGLE, MISSILE_MAX_ANGLE);
+    }
     p.heading += clamp(wrapAngle(desired - p.heading), -turn * dt, turn * dt);
   }
 
@@ -1803,8 +1950,7 @@ export class Game {
         b.respawn -= dt;
         if (b.respawn <= 0) {
           b.active = true;
-          b.mesh.visible = true;
-          b.mesh.scale.setScalar(0.01);
+          b.scale = 0.01;
         }
       }
     }
@@ -1906,9 +2052,8 @@ export class Game {
     }
     for (const h of this.hazards) {
       if (h.owner === r && h.armT > 0) continue;
-      const pr = tr.project(h.x, h.z, r.trackIndex);
-      const a = tr.ahead(d, pr.d);
-      if (a > 0 && a < 40) avoid(pr.lat, 2.6);
+      const a = tr.ahead(d, h.d);
+      if (a > 0 && a < 40) avoid(h.lat, 2.6);
     }
     lane = clamp(lane, -hw + 2.5, hw - 2.5);
     ai.lane += (lane - ai.lane) * damp(1.6, dt);
@@ -2101,7 +2246,7 @@ export class Game {
     const fz = Math.cos(r.heading);
     switch (r.item) {
       case 'missile': {
-        const t = this.findMissileTarget(r).target;
+        const t = this.findMissileTarget(r);
         if (!t) return r.ai.holdT > 6;
         const dist = Math.hypot(t.x - r.x, t.z - r.z);
         return dist < 220 || r.ai.holdT > 6;
@@ -2380,14 +2525,21 @@ export class Game {
 
     // item boxes spin & hue cycle
     const { boxMat } = itemBoxAssets();
-    const hue = (t * 0.2) % 1;
-    boxMat.color.setHSL(hue, 1, 0.55);
-    boxMat.emissive.setHSL(hue, 1, 0.3);
-    for (const b of this.boxes) {
-      if (!b.active) continue;
-      b.mesh.rotation.set(t * 0.8, t * 1.2, 0);
-      b.mesh.position.y = b.y + Math.sin(t * 2.5 + b.lat) * 0.25;
-      if (b.mesh.scale.x < 1) b.mesh.scale.setScalar(Math.min(1, b.mesh.scale.x + dt * 3));
+    const hue = (t * 0.08) % 1;
+    boxMat.color.setHSL(hue, 0.7, 0.6);
+    boxMat.emissive.setHSL(hue, 0.7, 0.18);
+    if (this.boxMesh) {
+      const m = this.tmpM;
+      this.boxes.forEach((b, i) => {
+        if (b.active && b.scale < 1) b.scale = Math.min(1, b.scale + dt * 3);
+        const sc = b.active ? b.scale : 0;
+        this.tmpE.set(t * 0.8, t * 1.2, 0);
+        this.tmpQ.setFromEuler(this.tmpE);
+        this.tmpV.set(b.x, b.y + Math.sin(t * 2.5 + b.lat) * 0.25, b.z);
+        m.compose(this.tmpV, this.tmpQ, this.tmpS.setScalar(sc));
+        this.boxMesh!.setMatrixAt(i, m);
+      });
+      this.boxMesh.instanceMatrix.needsUpdate = true;
     }
 
     // barricade wreckage
@@ -2435,7 +2587,7 @@ export class Game {
       this.warnBeepT -= dt;
       if (minD < 160 && this.warnBeepT <= 0) {
         audio.warn(minD < 45);
-        this.warnBeepT = minD < 45 ? 0.16 : 0.42;
+        this.warnBeepT = minD < 45 ? 0.3 : 0.7;
       }
     }
 
@@ -2466,7 +2618,11 @@ export class Game {
       this.hudTimer = 0.1;
       this.pushHud();
     }
-    this.drawMinimap();
+    this.minimapT -= dt;
+    if (this.minimapT <= 0) {
+      this.minimapT = 0.05;
+      this.drawMinimap();
+    }
   }
 
   /** tyre marks while sliding, spinning or braking hard (only near the camera) */

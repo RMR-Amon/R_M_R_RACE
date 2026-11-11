@@ -3,6 +3,10 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      screens: {
+        // phones held sideways: wide but very little height
+        short: { raw: '(orientation: landscape) and (max-height: 540px)' },
+      },
       fontFamily: {
         display: ['"Russo One"', 'system-ui', 'sans-serif'],
         body: ['Nunito', 'system-ui', 'sans-serif'],

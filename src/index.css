@@ -18,12 +18,12 @@ body {
 
 @layer components {
   .btn-primary {
-    @apply relative inline-flex items-center justify-center gap-2 rounded-2xl px-6 py-3 font-display text-lg uppercase tracking-wide text-white
+    @apply relative inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-2.5 font-display text-base uppercase tracking-wide text-white sm:px-6 sm:py-3 sm:text-lg
       bg-gradient-to-b from-orange-400 to-rose-600 shadow-[0_6px_0_#7f1d1d,0_10px_30px_rgba(244,63,94,.45)]
       transition active:translate-y-1 active:shadow-[0_2px_0_#7f1d1d] hover:brightness-110 disabled:opacity-40 disabled:pointer-events-none;
   }
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 font-display uppercase tracking-wide text-white/90
+    @apply inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 font-display uppercase tracking-wide text-white/90 sm:px-5 sm:py-3
       bg-white/10 ring-1 ring-white/15 backdrop-blur transition hover:bg-white/20 active:scale-95;
   }
   .panel {
@@ -32,6 +32,21 @@ body {
   .text-outline {
     text-shadow: 0 2px 0 rgba(0,0,0,.6), 0 0 18px rgba(0,0,0,.35);
   }
+}
+
+/* ---------- race HUD sizing: scales with the short side of the screen, works in both orientations */
+.tc-lg { width: clamp(56px, 15vmin, 82px); height: clamp(56px, 15vmin, 82px); }
+.tc-md { width: clamp(46px, 12.5vmin, 66px); height: clamp(46px, 12.5vmin, 66px); }
+.tc-sm { width: clamp(38px, 10vmin, 54px); height: clamp(38px, 10vmin, 54px); }
+.hud-btn { width: clamp(30px, 8vmin, 40px); height: clamp(30px, 8vmin, 40px); }
+.mirror-rear { width: min(34vw, 56vh, 400px); aspect-ratio: 3.4 / 1; }
+.mirror-side { width: min(10.5vw, 17vh, 140px); aspect-ratio: 1.55 / 1; }
+.minimap { width: clamp(76px, 20vmin, 144px); height: clamp(76px, 20vmin, 144px); }
+.item-slot { width: clamp(52px, 13vmin, 92px); height: clamp(52px, 13vmin, 92px); font-size: clamp(28px, 7.5vmin, 56px); }
+/* on touch screens in portrait the speedometer sits above the control cluster */
+.speedo-touch { bottom: calc(clamp(56px, 15vmin, 82px) + 1.75rem + env(safe-area-inset-bottom)); }
+@media (orientation: landscape) {
+  .speedo-touch { bottom: max(0.75rem, env(safe-area-inset-bottom)); }
 }
 
 .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }

@@ -274,10 +274,10 @@ function gingerbread(): Proto {
 function bunny(): Proto {
   return () =>
     merge([
-      part(S(0.42, 12, 10), '#ffffff', 0, 0.55, 0, 0, 0, 0, 1, 1.15, 1),
-      part(S(0.3, 12, 10), '#ffffff', 0, 1.2, 0.05),
-      part(B(0.12, 0.6, 0.08), '#ffffff', -0.12, 1.7, 0, 0, 0, 0.12),
-      part(B(0.12, 0.6, 0.08), '#ffffff', 0.12, 1.7, 0, 0, 0, -0.12),
+      part(S(0.42, 12, 10), '#eeeaec', 0, 0.55, 0, 0, 0, 0, 1, 1.15, 1),
+      part(S(0.3, 12, 10), '#eeeaec', 0, 1.2, 0.05),
+      part(B(0.12, 0.6, 0.08), '#eeeaec', -0.12, 1.7, 0, 0, 0, 0.12),
+      part(B(0.12, 0.6, 0.08), '#eeeaec', 0.12, 1.7, 0, 0, 0, -0.12),
       part(B(0.06, 0.45, 0.02), '#f9a8d4', -0.12, 1.7, 0.05, 0, 0, 0.12),
       part(B(0.06, 0.45, 0.02), '#f9a8d4', 0.12, 1.7, 0.05, 0, 0, -0.12),
       part(S(0.05, 6, 4), '#111', -0.11, 1.26, 0.3),
@@ -350,7 +350,7 @@ const SIGNS: [string, string, string][] = [
   ['ВПЕРЁД!', '#22c55e', '#ffffff'],
   ['ЖМИ\nГАЗ!', '#3b82f6', '#ffffff'],
   ['ТЫ\nЛУЧШИЙ!', '#ec4899', '#ffffff'],
-  ['★ №1 ★', '#ffffff', '#e11d48'],
+  ['★ №1 ★', '#e8e8ea', '#c2334f'],
 ];
 
 interface FanInstance {
@@ -433,7 +433,7 @@ function buildSpectators(track: Track, theme: ThemeId, rng: Rng, group: THREE.Gr
     const mesh = instanced(t.proto(), mat, list.map((s) => s.p));
     group.add(mesh);
     list.forEach((s, i) =>
-      fans.push({ mesh, index: i, ...s.p, phase: rng.range(0, Math.PI * 2), speed: rng.range(5, 9), float: s.float }),
+      fans.push({ mesh, index: i, ...s.p, phase: rng.range(0, Math.PI * 2), speed: rng.range(3, 5.5), float: s.float }),
     );
   });
 
@@ -455,18 +455,24 @@ function buildSpectators(track: Track, theme: ThemeId, rng: Rng, group: THREE.Gr
       color: theme === 'pixel' ? '#9ca3af' : theme === 'candy' ? '#fbcfe8' : theme === 'desert' ? '#a16207' : '#475569',
       roughness: 0.8,
     });
+    // every step of every stand merged into one mesh (one draw call)
+    const steps: THREE.BufferGeometry[] = [];
     for (const s of standList) {
       for (let r = 0; r < s.rows; r++) {
         const h = 0.6 + r * 0.9;
-        const step = new THREE.Mesh(new THREE.BoxGeometry(s.len + 2, h, 2.0), standMat);
         // rows go outward from the track
         const off = -r * 2.0;
-        step.position.set(s.x + Math.sin(s.ry) * off, h / 2, s.z + Math.cos(s.ry) * off);
-        step.rotation.y = s.ry;
-        step.receiveShadow = true;
-        group.add(step);
+        const g = new THREE.BoxGeometry(s.len + 2, h, 2.0);
+        g.applyMatrix4(
+          _m.compose(_v.set(s.x + Math.sin(s.ry) * off, h / 2, s.z + Math.cos(s.ry) * off), _q.setFromEuler(_e.set(0, s.ry, 0)), _s.set(1, 1, 1)),
+        );
+        steps.push(g);
       }
     }
+    const stands = new THREE.Mesh(mergeGeometries(steps, false)!, standMat);
+    steps.forEach((g) => g.dispose());
+    stands.receiveShadow = true;
+    group.add(stands);
   }
 
   return { fans, signs };
@@ -526,7 +532,7 @@ function decorCity(track: Track, rng: Rng, g: THREE.Group) {
   const winTex = windowsTexture(5, '#ffd27a');
   const buildings = new THREE.Mesh(
     merge(parts),
-    new THREE.MeshStandardMaterial({ vertexColors: true, emissive: '#ffffff', emissiveMap: winTex, emissiveIntensity: 1.1, roughness: 0.6, metalness: 0.2 }),
+    new THREE.MeshStandardMaterial({ vertexColors: true, emissive: '#ffffff', emissiveMap: winTex, emissiveIntensity: 0.65, roughness: 0.7, metalness: 0.1 }),
   );
   g.add(buildings);
 
@@ -546,14 +552,14 @@ function decorCity(track: Track, rng: Rng, g: THREE.Group) {
   }
   const lampGeo = merge([part(C(0.15, 0.22, 9, 8), '#3f3f46', 0, 4.5, 0), part(B(0.16, 0.16, 2.6), '#3f3f46', 0, 8.9, 1.2)]);
   g.add(instanced(lampGeo, vc(0.5, { metalness: 0.6 }), lampSpots));
-  g.add(instanced(new THREE.BoxGeometry(0.7, 0.25, 1.0), new THREE.MeshStandardMaterial({ color: '#fff3c4', emissive: '#ffd27a', emissiveIntensity: 3 }), bulbs));
+  g.add(instanced(new THREE.BoxGeometry(0.7, 0.25, 1.0), new THREE.MeshStandardMaterial({ color: '#fff3c4', emissive: '#ffd27a', emissiveIntensity: 1.9 }), bulbs));
 
   // trees in small parks
   const treeGeo = merge([part(C(0.25, 0.35, 2.4, 8), '#5b3a1a', 0, 1.2, 0), part(S(1.6, 10, 8), '#2f7d32', 0, 3.4, 0), part(S(1.1, 10, 8), '#3a9440', 0.5, 4.3, 0.3)]);
   g.add(instanced(treeGeo, vc(), scatter(track, rng, 120, hw + 8, 34, 0.8, 1.4)));
 
   // neon billboards
-  const neon = ['#f472b6', '#22d3ee', '#a3e635', '#facc15'];
+  const neon = ['#d98bb3', '#6cc4d6', '#a9c97a', '#e2c46a'];
   for (let i = 0; i < 10; i++) {
     const d = (track.length / 10) * i + 30;
     const side = i % 2 ? 1 : -1;
@@ -563,7 +569,7 @@ function decorCity(track: Track, rng: Rng, g: THREE.Group) {
     const c = neon[i % neon.length];
     const board = new THREE.Mesh(
       new THREE.BoxGeometry(12, 5, 0.4),
-      new THREE.MeshStandardMaterial({ color: '#111', emissive: c, emissiveIntensity: 1.6 }),
+      new THREE.MeshStandardMaterial({ color: '#111', emissive: c, emissiveIntensity: 0.75 }),
     );
     board.position.set(p.x, 9, p.z);
     board.rotation.y = Math.atan2(s.nx * side, s.nz * side);
@@ -650,7 +656,7 @@ function decorOcean(track: Track, rng: Rng, g: THREE.Group) {
       part(S(0.3, 8, 6), col, 1.1, 2.9, 0),
       part(S(0.3, 8, 6), col, -1.0, 2.7, 0.4),
     ]);
-    g.add(instanced(coral, vc(0.5, { emissive: col, emissiveIntensity: 0.25 }), scatter(track, rng, 40, hw + 5, 140, 0.8, 2.2)));
+    g.add(instanced(coral, vc(0.5, { emissive: col, emissiveIntensity: 0.1 }), scatter(track, rng, 40, hw + 5, 140, 0.8, 2.2)));
   }
   const brain = merge([part(S(1.4, 12, 8), '#f9a8d4', 0, 0.4, 0, 0, 0, 0, 1, 0.6, 1)]);
   g.add(instanced(brain, vc(0.6), scatter(track, rng, 60, hw + 5, 160, 0.6, 2)));
@@ -684,17 +690,17 @@ function decorPixel(track: Track, rng: Rng, g: THREE.Group) {
   const pipe = merge([part(C(1.4, 1.4, 4, 16), '#16a34a', 0, 2, 0), part(C(1.75, 1.75, 1.2, 16), '#22c55e', 0, 4.4, 0), part(C(1.2, 1.2, 0.1, 16), '#052e16', 0, 5.0, 0)]);
   g.add(instanced(pipe, vc(0.5), scatter(track, rng, 24, hw + 7, 80, 1, 1.6), true));
   // clouds
-  const cloud = merge([part(B(10, 3, 6), '#ffffff', 0, 0, 0), part(B(6, 3, 5), '#ffffff', 3, 2, 0), part(B(5, 2, 4), '#ffffff', -3, 1.5, 0)]);
-  g.add(instanced(cloud, vc(1, { emissive: '#ffffff', emissiveIntensity: 0.3 }), scatter(track, rng, 40, 0, 999, 1.5, 3, 800).map((p) => ({ ...p, y: rng.range(70, 140) }))));
+  const cloud = merge([part(B(10, 3, 6), '#eef2f6', 0, 0, 0), part(B(6, 3, 5), '#eef2f6', 3, 2, 0), part(B(5, 2, 4), '#eef2f6', -3, 1.5, 0)]);
+  g.add(instanced(cloud, vc(1, { emissive: '#ffffff', emissiveIntensity: 0.08 }), scatter(track, rng, 40, 0, 999, 1.5, 3, 800).map((p) => ({ ...p, y: rng.range(70, 140) }))));
 }
 
 function decorCandy(track: Track, rng: Rng, g: THREE.Group) {
   const hw = track.halfWidth;
   // lollipops: stick instanced + swirl disc per colour pair
-  const pairs: [string, string][] = [['#ff4d88', '#ffffff'], ['#22d3ee', '#ffffff'], ['#facc15', '#f97316'], ['#a855f7', '#f9a8d4']];
+  const pairs: [string, string][] = [['#e86b95', '#efe6ea'], ['#6cc6d9', '#efe6ea'], ['#ecc95a', '#e8925a'], ['#a985d9', '#f1bad3']];
   for (const [a, b] of pairs) {
     const spots = scatter(track, rng, 18, hw + 7, 150, 1, 2.2);
-    g.add(instanced(merge([part(C(0.2, 0.2, 7, 8), '#ffffff', 0, 3.5, 0)]), vc(0.4), spots));
+    g.add(instanced(merge([part(C(0.2, 0.2, 7, 8), '#ebe7e9', 0, 3.5, 0)]), vc(0.5), spots));
     const disc = new THREE.CylinderGeometry(2.4, 2.4, 0.5, 28);
     disc.rotateX(Math.PI / 2);
     disc.translate(0, 8.5, 0);
@@ -702,7 +708,7 @@ function decorCandy(track: Track, rng: Rng, g: THREE.Group) {
     g.add(instanced(disc, discMat, spots, true));
   }
   // candy canes
-  const caneTex = stripeTexture('#ffffff', '#ef4444');
+  const caneTex = stripeTexture('#ece6e8', '#d9535d');
   const caneGeo = (() => {
     const stick = new THREE.CylinderGeometry(0.4, 0.4, 7, 12);
     stick.translate(0, 3.5, 0);
@@ -737,7 +743,7 @@ function decorCandy(track: Track, rng: Rng, g: THREE.Group) {
   }
   // cotton-candy clouds
   const cloud = merge([part(S(6, 12, 8), '#fbcfe8', 0, 0, 0), part(S(4.5, 12, 8), '#f5d0fe', 5, 1, 0), part(S(4, 12, 8), '#fce7f3', -5, 0.5, 1)]);
-  g.add(instanced(cloud, vc(1, { emissive: '#fbcfe8', emissiveIntensity: 0.4 }), scatter(track, rng, 30, 0, 999, 1.5, 3, 800).map((p) => ({ ...p, y: rng.range(70, 130) }))));
+  g.add(instanced(cloud, vc(1, { emissive: '#fbcfe8', emissiveIntensity: 0.1 }), scatter(track, rng, 30, 0, 999, 1.5, 3, 800).map((p) => ({ ...p, y: rng.range(70, 130) }))));
 }
 
 // ---------------------------------------------------------------- sky
@@ -755,7 +761,7 @@ function buildSky(theme: ThemeId) {
       sunDir: { value: new THREE.Vector3(...st.sunDir).normalize() },
       sunColor: { value: new THREE.Color(st.sun) },
       clouds: { value: theme === 'ocean' ? 0 : theme === 'city' ? 0.35 : 1 },
-      night: { value: theme === 'city' ? 1 : 0 },
+      night: { value: theme === 'city' ? 0.6 : 0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
@@ -785,7 +791,7 @@ function buildSky(theme: ThemeId) {
         vec3 c = h > 0.0 ? mix(horizon, top, pow(h, 0.55)) : mix(horizon, bottom, pow(-h, 0.4));
         // sun disc + wide glow (a moon-like glow at night)
         float sd = max(dot(dir, sunDir), 0.0);
-        c += sunColor * (pow(sd, 900.0) * (night > 0.5 ? 1.5 : 6.0) + pow(sd, 12.0) * 0.35 + pow(sd, 3.0) * 0.12);
+        c += sunColor * (pow(sd, 900.0) * (night > 0.5 ? 1.2 : 2.2) + pow(sd, 12.0) * 0.25 + pow(sd, 3.0) * 0.1);
         // drifting cloud layer projected on a dome
         if (h > 0.0 && clouds > 0.0) {
           vec2 uv = dir.xz / (h + 0.18) * 1.6;

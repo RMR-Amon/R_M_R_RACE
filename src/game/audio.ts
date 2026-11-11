@@ -1,45 +1,42 @@
 import type { EngineKind } from './types';
 
 /**
- * Engine character. The sound is a looped buffer of combustion pulses (one per cylinder firing)
- * filtered through exhaust resonances; its playback rate follows the RPM, so the pitch and the
- * firing rhythm change together like a real engine.
+ * Engine character. The engine is a small subtractive synth: a fundamental tone with a soft
+ * harmonic series (a slightly detuned twin makes it warm), a sub-octave for body, a gentle
+ * amplitude "burble" for V8 / boxer engines and a low-pass filter that opens with the revs.
+ * The pitch range is compressed into a calm band, so high revs never turn into a shrill whine.
  */
 interface EngineProfile {
-  cyl: number;
   idle: number;
   redline: number;
-  /** exhaust resonance frequencies at 1000 rpm */
-  reso: [number, number];
-  /** pulse decay (s) at 1000 rpm */
-  decay: number;
-  /** combustion noise / diesel clatter */
+  /** fundamental pitch (Hz) at idle and at the redline */
+  pitch: [number, number];
+  /** amplitudes of harmonics 1..n of the main tone */
+  harm: number[];
+  /** sub-octave level (rumble) */
+  sub: number;
+  /** depth of the uneven-firing amplitude modulation (burble) */
+  lump: number;
+  /** low-pass cut-off (Hz) at idle and at the redline, full throttle */
+  bright: [number, number];
+  /** intake / mechanical noise level */
   noise: number;
-  /** saturation amount */
-  drive: number;
-  cutoff: number;
   gain: number;
-  /** relative loudness of each firing (uneven = burble) */
-  amps?: number[];
-  /** firing angle offsets in degrees from even spacing (unequal headers) */
-  jitter?: number[];
 }
 
 const PROFILES: Record<EngineKind, EngineProfile> = {
-  i4: { cyl: 4, idle: 850, redline: 7200, reso: [190, 560], decay: 0.0055, noise: 0.12, drive: 2.2, cutoff: 1000, gain: 0.55 },
-  v6: { cyl: 6, idle: 800, redline: 7000, reso: [160, 470], decay: 0.006, noise: 0.1, drive: 2.5, cutoff: 1050, gain: 0.55 },
-  v8: { cyl: 8, idle: 700, redline: 6800, reso: [105, 320], decay: 0.0085, noise: 0.1, drive: 3.2, cutoff: 760, gain: 0.66, amps: [1, 0.72, 0.95, 0.68, 1, 0.75, 0.9, 0.7] },
-  v12: { cyl: 12, idle: 900, redline: 8600, reso: [220, 660], decay: 0.0045, noise: 0.07, drive: 2.0, cutoff: 1500, gain: 0.5 },
-  single: { cyl: 1, idle: 1800, redline: 11000, reso: [260, 760], decay: 0.011, noise: 0.22, drive: 3.6, cutoff: 1700, gain: 0.42 },
-  boxer: { cyl: 4, idle: 800, redline: 7000, reso: [135, 390], decay: 0.008, noise: 0.12, drive: 2.9, cutoff: 850, gain: 0.6, jitter: [0, -16, 22, -9], amps: [1, 0.8, 0.95, 0.75] },
-  diesel: { cyl: 4, idle: 700, redline: 4600, reso: [125, 940], decay: 0.0042, noise: 0.38, drive: 2.0, cutoff: 700, gain: 0.58 },
-  f1: { cyl: 10, idle: 4000, redline: 15000, reso: [320, 960], decay: 0.0038, noise: 0.06, drive: 1.8, cutoff: 2600, gain: 0.42 },
-  electric: { cyl: 0, idle: 0, redline: 16000, reso: [0, 0], decay: 0, noise: 0, drive: 1, cutoff: 3000, gain: 0.3 },
+  i4: { idle: 850, redline: 7200, pitch: [48, 168], harm: [1, 0.5, 0.28, 0.14, 0.07], sub: 0.32, lump: 0.05, bright: [420, 1300], noise: 0.04, gain: 0.5 },
+  v6: { idle: 800, redline: 7000, pitch: [44, 156], harm: [1, 0.55, 0.32, 0.18, 0.09], sub: 0.38, lump: 0.06, bright: [400, 1250], noise: 0.04, gain: 0.5 },
+  v8: { idle: 700, redline: 6800, pitch: [36, 132], harm: [1, 0.62, 0.38, 0.2, 0.1], sub: 0.55, lump: 0.2, bright: [320, 1050], noise: 0.035, gain: 0.55 },
+  v12: { idle: 900, redline: 8600, pitch: [54, 196], harm: [1, 0.45, 0.32, 0.22, 0.14, 0.08], sub: 0.28, lump: 0.03, bright: [520, 1600], noise: 0.03, gain: 0.46 },
+  single: { idle: 1800, redline: 11000, pitch: [60, 200], harm: [1, 0.45, 0.22, 0.1], sub: 0.2, lump: 0.1, bright: [480, 1400], noise: 0.05, gain: 0.38 },
+  boxer: { idle: 800, redline: 7000, pitch: [42, 146], harm: [1, 0.6, 0.35, 0.18, 0.08], sub: 0.5, lump: 0.16, bright: [360, 1100], noise: 0.04, gain: 0.5 },
+  diesel: { idle: 700, redline: 4600, pitch: [34, 100], harm: [1, 0.7, 0.45, 0.26, 0.15], sub: 0.5, lump: 0.08, bright: [300, 800], noise: 0.06, gain: 0.5 },
+  f1: { idle: 4000, redline: 15000, pitch: [80, 270], harm: [1, 0.42, 0.26, 0.16, 0.09], sub: 0.15, lump: 0.02, bright: [760, 2100], noise: 0.025, gain: 0.4 },
+  electric: { idle: 0, redline: 16000, pitch: [55, 420], harm: [1, 0.12], sub: 0, lump: 0, bright: [900, 2600], noise: 0.02, gain: 0.2 },
 };
 
 export const engineRange = (kind: EngineKind) => ({ idle: PROFILES[kind].idle, redline: PROFILES[kind].redline });
-
-const BASE_RPM = 1000;
 
 /** Simple automatic gearbox: turns road speed into engine RPM with real up/down shifts */
 export class Gearbox {
@@ -87,120 +84,105 @@ export class Gearbox {
   }
 }
 
-function buildEngineBuffer(ctx: BaseAudioContext, p: EngineProfile) {
-  const cycles = 6;
-  const cycleLen = 120 / BASE_RPM; // one 4-stroke cycle = 2 revolutions
-  const sr = ctx.sampleRate;
-  const n = Math.round(cycleLen * cycles * sr);
-  const buf = ctx.createBuffer(1, n, sr);
-  const d = buf.getChannelData(0);
-  let seed = 12345;
-  const rand = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 4294967296;
-  };
-  const [r1, r2] = p.reso;
-  const tail = Math.round(p.decay * 10 * sr);
-  for (let c = 0; c < cycles; c++) {
-    for (let k = 0; k < p.cyl; k++) {
-      const angle = (k * 720) / p.cyl + (p.jitter?.[k % p.jitter.length] ?? 0) + (rand() - 0.5) * 6;
-      const start = Math.round((c * cycleLen + (angle / 720) * cycleLen) * sr);
-      const amp = (p.amps?.[k % p.amps.length] ?? 1) * (0.9 + rand() * 0.2);
-      for (let i = 0; i < tail; i++) {
-        const t = i / sr;
-        const env = Math.exp(-t / p.decay);
-        const s =
-          Math.sin(2 * Math.PI * r1 * t) * env +
-          0.55 * Math.sin(2 * Math.PI * r2 * t) * Math.exp(-t / (p.decay * 0.6)) +
-          0.7 * Math.sin(2 * Math.PI * r1 * 0.5 * t) * Math.exp(-t / (p.decay * 2.5)) +
-          p.noise * (rand() * 2 - 1) * Math.exp(-t / (p.decay * 0.5));
-        d[(start + i) % n] += s * amp;
-      }
-    }
+/** periodic waves are cached per engine kind and audio context */
+const waveCache = new WeakMap<BaseAudioContext, Map<EngineKind, PeriodicWave>>();
+function engineWave(ctx: BaseAudioContext, kind: EngineKind) {
+  let m = waveCache.get(ctx);
+  if (!m) waveCache.set(ctx, (m = new Map()));
+  let w = m.get(kind);
+  if (!w) {
+    const h = PROFILES[kind].harm;
+    const real = new Float32Array(h.length + 1);
+    const imag = new Float32Array(h.length + 1);
+    h.forEach((a, i) => (imag[i + 1] = a));
+    w = ctx.createPeriodicWave(real, imag);
+    m.set(kind, w);
   }
-  let peak = 0;
-  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(d[i]));
-  for (let i = 0; i < n; i++) d[i] = (d[i] / (peak || 1)) * 0.9;
-  return buf;
-}
-
-function shaperCurve(drive: number) {
-  const curve = new Float32Array(1024);
-  for (let i = 0; i < 1024; i++) {
-    const x = (i / 1023) * 2 - 1;
-    curve[i] = Math.tanh(x * drive) / Math.tanh(drive);
-  }
-  return curve;
+  return w;
 }
 
 /** One running engine (the player's car, or the nearest rival passing by) */
 class EngineVoice {
   readonly kind: EngineKind;
   private nodes: AudioNode[] = [];
-  private srcs: (AudioScheduledSourceNode)[] = [];
+  private srcs: AudioScheduledSourceNode[] = [];
   private out: GainNode;
   private filter: BiquadFilterNode;
-  private main: AudioBufferSourceNode | null = null;
+  private main: OscillatorNode;
+  private twin: OscillatorNode;
+  private sub: OscillatorNode;
+  private lfo: OscillatorNode;
   private intake: GainNode;
   private intakeFilter: BiquadFilterNode;
-  private whine: OscillatorNode[] = [];
   private p: EngineProfile;
+  private smoothRpm = -1;
 
   constructor(
     private ctx: AudioContext,
     dest: AudioNode,
     kind: EngineKind,
-    buffer: AudioBuffer | null,
     noise: AudioBuffer,
   ) {
     this.kind = kind;
-    this.p = PROFILES[kind];
+    const p = (this.p = PROFILES[kind]);
     const c = ctx;
     this.out = c.createGain();
     this.out.gain.value = 0;
     this.out.connect(dest);
+    // two gentle low-pass stages = a soft roll-off with no resonant peak
     this.filter = c.createBiquadFilter();
     this.filter.type = 'lowpass';
-    this.filter.Q.value = 0.9;
-    this.filter.connect(this.out);
-    this.nodes.push(this.out, this.filter);
+    this.filter.Q.value = 0.5;
+    const smooth = c.createBiquadFilter();
+    smooth.type = 'lowpass';
+    smooth.Q.value = 0.3;
+    smooth.frequency.value = 2600;
+    this.filter.connect(smooth);
+    smooth.connect(this.out);
+    // amplitude modulation for the burble (base gain 1, the LFO adds ±lump)
+    const am = c.createGain();
+    am.gain.value = 1;
+    am.connect(this.filter);
+    this.nodes.push(this.out, this.filter, smooth, am);
 
-    if (kind === 'electric') {
-      // inverter + motor whine: a few detuned harmonics
-      for (const [mul, type, g] of [[1, 'sine', 0.5], [2.02, 'triangle', 0.22], [3.5, 'sine', 0.12]] as const) {
-        const o = c.createOscillator();
-        o.type = type;
-        o.frequency.value = 60 * mul;
-        const og = c.createGain();
-        og.gain.value = g;
-        o.connect(og);
-        og.connect(this.filter);
-        o.start();
-        this.whine.push(o);
-        this.srcs.push(o);
-        this.nodes.push(og);
-      }
-    } else if (buffer) {
-      const src = c.createBufferSource();
-      src.buffer = buffer;
-      src.loop = true;
-      const shaper = c.createWaveShaper();
-      shaper.curve = shaperCurve(this.p.drive);
-      shaper.oversample = '2x';
-      src.connect(shaper);
-      shaper.connect(this.filter);
-      src.start();
-      this.main = src;
-      this.srcs.push(src);
-      this.nodes.push(shaper);
-    }
-    // intake / induction roar: band-passed noise that opens with the throttle
+    const wave = engineWave(c, kind);
+    const osc = (type: 'wave' | OscillatorType, level: number, detune = 0) => {
+      const o = c.createOscillator();
+      if (type === 'wave') o.setPeriodicWave(wave);
+      else o.type = type;
+      o.frequency.value = p.pitch[0];
+      o.detune.value = detune;
+      const g = c.createGain();
+      g.gain.value = level;
+      o.connect(g);
+      g.connect(am);
+      o.start();
+      this.srcs.push(o);
+      this.nodes.push(g);
+      return o;
+    };
+    this.main = osc('wave', 0.55);
+    this.twin = osc('wave', 0.3, 9);
+    this.sub = osc('sine', p.sub);
+
+    this.lfo = c.createOscillator();
+    this.lfo.type = 'sine';
+    this.lfo.frequency.value = p.pitch[0] / 2;
+    const depth = c.createGain();
+    depth.gain.value = p.lump;
+    this.lfo.connect(depth);
+    depth.connect(am.gain);
+    this.lfo.start();
+    this.srcs.push(this.lfo);
+    this.nodes.push(depth);
+
+    // soft intake breath that opens with the throttle
     const n = c.createBufferSource();
     n.buffer = noise;
     n.loop = true;
     this.intakeFilter = c.createBiquadFilter();
-    this.intakeFilter.type = 'bandpass';
-    this.intakeFilter.Q.value = 1.2;
+    this.intakeFilter.type = 'lowpass';
+    this.intakeFilter.Q.value = 0.4;
     this.intake = c.createGain();
     this.intake.gain.value = 0;
     n.connect(this.intakeFilter);
@@ -214,23 +196,23 @@ class EngineVoice {
   set(rpm: number, throttle: number, volume: number, cut = false) {
     const t = this.ctx.currentTime;
     const p = this.p;
-    const load = cut ? 0.1 : throttle;
-    const rr = Math.min(1.1, rpm / p.redline);
-    if (this.kind === 'electric') {
-      const f = 40 + rpm * 0.06;
-      this.whine.forEach((o, i) => o.frequency.setTargetAtTime(f * [1, 2.02, 3.5][i], t, 0.05));
-      this.filter.frequency.setTargetAtTime(1800 + rr * 4000, t, 0.08);
-      this.out.gain.setTargetAtTime(volume * p.gain * (0.15 + rr * 0.5) * (0.5 + load * 0.5), t, 0.08);
-      this.intakeFilter.frequency.setTargetAtTime(500 + rr * 1500, t, 0.1);
-      this.intake.gain.setTargetAtTime(0.25 * rr, t, 0.1);
-      return;
-    }
-    if (this.main) this.main.playbackRate.setTargetAtTime(Math.max(0.3, rpm / BASE_RPM), t, 0.03);
-    // loaded engines sound brighter; lifting off makes the note dull and quiet
-    this.filter.frequency.setTargetAtTime(p.cutoff * (0.45 + load * 0.75) * (0.7 + rr * 0.9), t, 0.05);
-    this.out.gain.setTargetAtTime(volume * p.gain * (0.32 + load * 0.68) * (0.55 + rr * 0.45), t, 0.05);
-    this.intakeFilter.frequency.setTargetAtTime(300 + rpm * 0.25, t, 0.08);
-    this.intake.gain.setTargetAtTime(load * rr * 0.32, t, 0.08);
+    const load = cut ? 0.15 : throttle;
+    // light smoothing on top of the gearbox so the pitch never jumps
+    this.smoothRpm = this.smoothRpm < 0 ? rpm : this.smoothRpm + (rpm - this.smoothRpm) * 0.5;
+    const span = Math.max(1, p.redline - p.idle);
+    const frac = Math.min(1.04, Math.max(0, (this.smoothRpm - p.idle) / span));
+    // exponential mapping = evenly spaced musical steps across the rev range
+    const f = p.pitch[0] * Math.pow(p.pitch[1] / p.pitch[0], frac);
+    this.main.frequency.setTargetAtTime(f, t, 0.04);
+    this.twin.frequency.setTargetAtTime(f, t, 0.04);
+    this.sub.frequency.setTargetAtTime(f / 2, t, 0.04);
+    this.lfo.frequency.setTargetAtTime(f / 2, t, 0.06);
+    const cutoff = (p.bright[0] + (p.bright[1] - p.bright[0]) * frac) * (0.6 + 0.4 * load);
+    this.filter.frequency.setTargetAtTime(cutoff, t, 0.06);
+    const level = volume * p.gain * (0.4 + 0.6 * load) * (0.62 + 0.38 * frac);
+    this.out.gain.setTargetAtTime(level, t, 0.06);
+    this.intakeFilter.frequency.setTargetAtTime(260 + frac * 900, t, 0.1);
+    this.intake.gain.setTargetAtTime(p.noise * load * (0.3 + frac), t, 0.1);
   }
 
   stop() {
@@ -246,12 +228,15 @@ class EngineVoice {
 }
 
 /** Synthesized sound engine — no audio files needed */
+/** overall output level */
+const MASTER = 0.45;
+
 class AudioEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private noiseBuf: AudioBuffer | null = null;
-  private buffers = new Map<EngineKind, AudioBuffer>();
   private player: EngineVoice | null = null;
+  private backfireT = 0;
   private other: EngineVoice | null = null;
   private engineBus: GainNode | null = null;
   private tyre: { g: GainNode; f: BiquadFilterNode; src: AudioBufferSourceNode } | null = null;
@@ -267,12 +252,23 @@ class AudioEngine {
     if (!AC) return;
     this.ctx = new AC();
     this.master = this.ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : 0.5;
-    // gentle compression glues engine, tyres and effects together
+    this.master.gain.value = this.muted ? 0 : MASTER;
+    // soften the whole mix: tame the harsh top end, then gently glue it with a compressor
+    const shelf = this.ctx.createBiquadFilter();
+    shelf.type = 'highshelf';
+    shelf.frequency.value = 3200;
+    shelf.gain.value = -7;
+    const top = this.ctx.createBiquadFilter();
+    top.type = 'lowpass';
+    top.frequency.value = 9000;
+    top.Q.value = 0.5;
     const comp = this.ctx.createDynamicsCompressor();
-    comp.threshold.value = -14;
+    comp.threshold.value = -18;
+    comp.knee.value = 18;
     comp.ratio.value = 3;
-    this.master.connect(comp);
+    this.master.connect(shelf);
+    shelf.connect(top);
+    top.connect(comp);
     comp.connect(this.ctx.destination);
     const len = this.ctx.sampleRate;
     this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -294,34 +290,24 @@ class AudioEngine {
 
   setMuted(m: boolean) {
     this.muted = m;
-    if (this.master && this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.5, this.ctx.currentTime, 0.05);
-  }
-
-  private buffer(kind: EngineKind) {
-    if (kind === 'electric') return null;
-    let b = this.buffers.get(kind);
-    if (!b) {
-      b = buildEngineBuffer(this.ctx!, PROFILES[kind]);
-      this.buffers.set(kind, b);
-    }
-    return b;
+    if (this.master && this.ctx) this.master.gain.setTargetAtTime(m ? 0 : MASTER, this.ctx.currentTime, 0.05);
   }
 
   startEngine(kind: EngineKind) {
     if (!this.ctx || !this.master || this.player) return;
     const c = this.ctx;
     this.engineBus = c.createGain();
-    this.engineBus.gain.value = 1;
+    this.engineBus.gain.value = 0.85;
     this.engineBus.connect(this.master);
-    this.player = new EngineVoice(c, this.engineBus, kind, this.buffer(kind), this.noiseBuf!);
-    // tyre squeal
+    this.player = new EngineVoice(c, this.engineBus, kind, this.noiseBuf!);
+    // tyre slide: a soft, low hiss instead of a sharp squeal
     const ts = c.createBufferSource();
     ts.buffer = this.noiseBuf;
     ts.loop = true;
     const tf = c.createBiquadFilter();
     tf.type = 'bandpass';
-    tf.frequency.value = 1100;
-    tf.Q.value = 2.5;
+    tf.frequency.value = 750;
+    tf.Q.value = 1.1;
     const tg = c.createGain();
     tg.gain.value = 0;
     ts.connect(tf);
@@ -360,18 +346,18 @@ class AudioEngine {
     }
     if (!this.other || this.other.kind !== kind) {
       this.other?.stop();
-      this.other = new EngineVoice(this.ctx, this.engineBus, kind, this.buffer(kind), this.noiseBuf!);
+      this.other = new EngineVoice(this.ctx, this.engineBus, kind, this.noiseBuf!);
     }
-    this.other.set(rpm, throttle, volume * 0.55);
+    this.other.set(rpm, throttle, volume * 0.4);
   }
 
   /** skid: 0..1 slide amount, speed: 0..1 */
   updateTyres(skid: number, speed: number) {
     if (!this.ctx || !this.tyre || !this.wind) return;
     const t = this.ctx.currentTime;
-    this.tyre.g.gain.setTargetAtTime(Math.min(1, skid) * 0.22 * Math.min(1, speed * 1.5), t, 0.06);
-    this.tyre.f.frequency.setTargetAtTime(900 + skid * 600, t, 0.1);
-    this.wind.g.gain.setTargetAtTime(speed * speed * 0.18, t, 0.2);
+    this.tyre.g.gain.setTargetAtTime(Math.min(1, skid) * 0.11 * Math.min(1, speed * 1.5), t, 0.08);
+    this.tyre.f.frequency.setTargetAtTime(700 + skid * 250, t, 0.12);
+    this.wind.g.gain.setTargetAtTime(speed * speed * 0.09, t, 0.25);
   }
 
   /** silence all continuous sounds (pause / race end) */
@@ -407,8 +393,9 @@ class AudioEngine {
     o.type = type;
     o.frequency.setValueAtTime(freq, t);
     if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
     o.connect(g);
     g.connect(this.master);
     o.start(t);
@@ -426,8 +413,9 @@ class AudioEngine {
     f.frequency.setValueAtTime(freq, t);
     if (slideTo) f.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
     const g = c.createGain();
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
     src.connect(f);
     f.connect(g);
     g.connect(this.master);
@@ -436,82 +424,82 @@ class AudioEngine {
   }
 
   countdown(go: boolean) {
-    this.tone(go ? 880 : 440, go ? 0.6 : 0.25, 'square', 0.12);
+    this.tone(go ? 784 : 523, go ? 0.55 : 0.22, 'triangle', 0.11);
   }
   pickup() {
-    [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.12, 'triangle', 0.1, undefined, i * 0.05));
+    [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.12, 'sine', 0.08, undefined, i * 0.05));
   }
   boost() {
-    this.noise(0.7, 0.25, 300, 'bandpass', 3000);
+    this.noise(0.7, 0.16, 260, 'bandpass', 1800);
   }
   shoot() {
-    this.tone(900, 0.25, 'sawtooth', 0.08, 200);
-    this.noise(0.3, 0.12, 2000, 'highpass');
+    this.tone(700, 0.25, 'triangle', 0.07, 180);
+    this.noise(0.3, 0.08, 1400, 'bandpass', 400);
   }
   ice() {
-    this.tone(1800, 0.3, 'sine', 0.08, 2600);
-    this.tone(2400, 0.2, 'triangle', 0.05, 1200, 0.05);
+    this.tone(1320, 0.3, 'sine', 0.06, 1760);
+    this.tone(1760, 0.2, 'sine', 0.035, 1100, 0.05);
   }
   explosion() {
-    this.noise(1.0, 0.5, 900, 'lowpass', 60);
-    this.tone(120, 0.6, 'sine', 0.3, 30);
+    this.noise(1.0, 0.38, 700, 'lowpass', 60);
+    this.tone(110, 0.6, 'sine', 0.24, 30);
   }
   crash() {
-    this.noise(0.35, 0.4, 1200, 'lowpass', 150);
-    this.tone(90, 0.25, 'square', 0.12, 40);
+    this.noise(0.35, 0.28, 900, 'lowpass', 150);
+    this.tone(85, 0.25, 'sine', 0.12, 40);
   }
   shield() {
-    this.tone(400, 0.4, 'sine', 0.1, 1200);
+    this.tone(392, 0.4, 'sine', 0.08, 784);
   }
   splat() {
-    this.noise(0.4, 0.2, 500, 'lowpass', 100);
+    this.noise(0.4, 0.16, 450, 'lowpass', 100);
   }
   drop() {
-    this.tone(300, 0.15, 'triangle', 0.1, 150);
+    this.tone(300, 0.15, 'sine', 0.09, 150);
   }
   fall() {
-    this.tone(600, 1.0, 'sine', 0.1, 80);
+    this.tone(520, 1.0, 'sine', 0.08, 90);
   }
   land() {
-    this.noise(0.2, 0.25, 400, 'lowpass');
+    this.noise(0.2, 0.18, 350, 'lowpass');
   }
   lap() {
-    [660, 880].forEach((f, i) => this.tone(f, 0.18, 'square', 0.08, undefined, i * 0.12));
+    [659, 880].forEach((f, i) => this.tone(f, 0.2, 'triangle', 0.07, undefined, i * 0.12));
   }
   finish() {
-    [523, 659, 784, 1046, 784, 1046].forEach((f, i) => this.tone(f, 0.2, 'square', 0.09, undefined, i * 0.12));
+    [523, 659, 784, 1046, 784, 1046].forEach((f, i) => this.tone(f, 0.22, 'triangle', 0.08, undefined, i * 0.12));
   }
   hit() {
-    this.tone(220, 0.3, 'square', 0.12, 80);
+    this.tone(196, 0.3, 'sine', 0.12, 80);
   }
-  /** exhaust pop when lifting off at high rpm */
+  /** soft exhaust burble when lifting off at high rpm (rate-limited so it never machine-guns) */
   backfire() {
-    this.noise(0.08, 0.22, 700, 'bandpass', 200);
+    if (!this.ctx || this.ctx.currentTime < this.backfireT) return;
+    this.backfireT = this.ctx.currentTime + 0.9;
+    this.noise(0.09, 0.1, 420, 'lowpass', 140);
   }
   /** cheering crowd for the intro */
   crowd() {
-    for (let i = 0; i < 6; i++) this.noise(1.4, 0.06, 900 + i * 260, 'bandpass', 700 + i * 200, i * 0.25);
-    [0.3, 0.9, 1.6].forEach((d) => this.noise(0.15, 0.1, 3000, 'highpass', undefined, d));
+    for (let i = 0; i < 6; i++) this.noise(1.4, 0.045, 800 + i * 200, 'bandpass', 650 + i * 160, i * 0.25);
   }
-  /** short radar beep: a missile is locked on the player */
+  /** soft radar ping: a missile is locked on the player */
   warn(urgent: boolean) {
-    this.tone(urgent ? 1560 : 1180, 0.08, 'square', 0.07);
+    this.tone(urgent ? 988 : 784, 0.09, 'sine', 0.05);
   }
   /** barricade smashed into pieces */
   smash() {
-    this.noise(0.5, 0.45, 2600, 'bandpass', 300);
-    this.tone(160, 0.2, 'triangle', 0.15, 60);
-    this.noise(0.25, 0.2, 5000, 'highpass');
+    this.noise(0.5, 0.3, 1800, 'bandpass', 300);
+    this.tone(150, 0.2, 'sine', 0.13, 60);
   }
   rebuild() {
-    this.tone(500, 0.12, 'triangle', 0.05, 800);
+    this.tone(523, 0.12, 'sine', 0.04, 784);
   }
   takeoff() {
-    this.noise(1.2, 0.25, 200, 'bandpass', 2400);
-    this.tone(300, 0.8, 'sawtooth', 0.05, 900);
+    this.noise(1.2, 0.16, 200, 'bandpass', 1600);
+    this.tone(300, 0.8, 'triangle', 0.04, 700);
   }
   dodge() {
-    this.noise(0.4, 0.2, 800, 'bandpass', 4000);
+    this.noise(0.4, 0.14, 700, 'bandpass', 2500);
   }
 }
 

@@ -64,7 +64,7 @@ export default function Setup({ save, onBack, onGarage, onDifficulty, onStart }:
             <button
               key={id}
               onClick={() => setMode(id)}
-              className={`rounded-2xl p-4 text-left ring-2 transition sm:p-5 ${
+              className={`rounded-2xl p-3 text-left ring-2 transition sm:p-5 ${
                 mode === id ? 'bg-gradient-to-br from-pink-500/30 to-violet-600/30 ring-pink-400' : 'bg-white/5 ring-white/10 hover:bg-white/10'
               }`}
             >
@@ -113,7 +113,7 @@ export default function Setup({ save, onBack, onGarage, onDifficulty, onStart }:
                         active ? 'scale-[1.02] ring-white' : 'ring-transparent hover:ring-white/30'
                       }`}
                     >
-                      <div className={`relative h-36 bg-gradient-to-br ${th.gradient}`}>
+                      <div className={`relative h-28 sm:h-36 bg-gradient-to-br ${th.gradient}`}>
                         <TrackThumb map={m} className="absolute inset-2 h-[calc(100%-16px)] w-[calc(100%-16px)] opacity-90" />
                         <span className="absolute left-3 top-2 text-3xl drop-shadow">{th.emoji}</span>
                         {active && (
@@ -197,7 +197,7 @@ export default function Setup({ save, onBack, onGarage, onDifficulty, onStart }:
                     <button
                       key={n}
                       onClick={() => setMinutes(n)}
-                      className={`h-12 w-12 rounded-2xl font-display text-xl ring-2 transition sm:h-14 sm:w-14 ${
+                      className={`h-10 w-10 rounded-xl font-display text-lg ring-2 transition sm:h-12 sm:w-12 sm:rounded-2xl sm:text-xl ${
                         minutes === n ? 'bg-gradient-to-b from-orange-400 to-rose-600 ring-white' : 'bg-white/5 ring-white/10 hover:bg-white/10'
                       }`}
                     >
@@ -225,7 +225,7 @@ export default function Setup({ save, onBack, onGarage, onDifficulty, onStart }:
               <span className="block truncate font-display text-sm">{car.name}</span>
             </span>
           </button>
-          <button onClick={start} className="btn-primary !px-8 text-xl">
+          <button onClick={start} className="btn-primary text-base sm:!px-8 sm:text-xl">
             {t('setup.start')}
           </button>
         </div>

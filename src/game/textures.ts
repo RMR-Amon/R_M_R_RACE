@@ -297,7 +297,7 @@ export function checkerTexture() {
     const s = 16;
     for (let y = 0; y < h; y += s)
       for (let x = 0; x < w; x += s) {
-        ctx.fillStyle = (x / s + y / s) % 2 ? '#111' : '#fff';
+        ctx.fillStyle = (x / s + y / s) % 2 ? '#1c1c1f' : '#dcdcdf';
         ctx.fillRect(x, y, s, s);
       }
   }, { pixel: true });
