@@ -31,6 +31,17 @@ export interface DesktopApi {
   /** called whenever the server starts / stops / changes networks; returns an unsubscribe function */
   onLanChanged(cb: (info: DesktopLanInfo) => void): () => void;
   openExternal(url: string): void;
+  /** the rmrrace:// link the app was started with (asked once, then cleared) */
+  takeLaunchRoute(): Promise<LaunchRoute | null>;
+  /** rmrrace:// links opened while the app is running */
+  onRoute(cb: (route: LaunchRoute) => void): () => void;
+}
+
+/** where an rmrrace:// link should take the player */
+export interface LaunchRoute {
+  screen: 'lan';
+  /** connect by IP to this host (rmrrace://join?host=…) */
+  host?: string;
 }
 
 declare global {
@@ -84,5 +95,20 @@ export function desktopLanReady(): Promise<DesktopLanInfo | null> {
   return info ? Promise.resolve(info) : api.lanInfo().then((i) => (set(i), i));
 }
 
-/** where to get the desktop version */
-export const DESKTOP_DOWNLOAD_URL = 'https://github.com/RMR-Amon/R_M_R_RACE/releases/latest';
+/** the Windows installer of the latest GitHub release (the file name is the same in every release) */
+export const INSTALLER_URL = 'https://github.com/RMR-Amon/R_M_R_RACE/releases/latest/download/RMR_Race_Setup.exe';
+/** all releases (notes, portable build) */
+export const RELEASES_URL = 'https://github.com/RMR-Amon/R_M_R_RACE/releases/latest';
+/** opens the desktop app straight in LAN multiplayer (registered by the installer) */
+export const DESKTOP_LAN_LINK = 'rmrrace://lan';
+
+/** host for "connect by IP" handed over by a deep link (read once by the multiplayer screen) */
+let joinHost: string | null = null;
+export const setJoinHost = (h: string | null) => {
+  joinHost = h;
+};
+export const takeJoinHost = () => {
+  const h = joinHost;
+  joinHost = null;
+  return h;
+};

@@ -1,0 +1,72 @@
+# Builds the Windows desktop app (installer + portable) and attaches it to a GitHub Release.
+#  - push a tag "v1.2.0"          → a release v1.2.0 is created with RMR_Race_Setup.exe
+#  - publish a release in the UI  → the files are built and attached to that release
+# The website's download button points to .../releases/latest/download/RMR_Race_Setup.exe.
+name: Desktop release
+
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Check versions match the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          GAME=$(grep -oP "GAME_VERSION = '\K[^']+" src/net/config.ts)
+          echo "tag=$TAG package=$PKG game=$GAME"
+          test "$TAG" = "$PKG" && test "$TAG" = "$GAME"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # UDP broadcast inside a CI virtual machine is not guaranteed: report, but do not block the release
+      - name: Network tests
+        continue-on-error: true
+        run: npm run test:lan
+        env:
+          RMR_LOG: warn
+
+      - name: Build installer
+        run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          name: R_M_R Race ${{ github.event.release.tag_name || github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            release/RMR_Race_Setup.exe
+            release/RMR_Race_Portable.exe
+          body: |
+            **R_M_R Race Desktop for Windows 10/11** — the full game with LAN multiplayer (2–8 players on one Wi-Fi, no internet needed).
+
+            - `RMR_Race_Setup.exe` — installer (desktop shortcut, `rmrrace://` link for the website, firewall rule for private networks)
+            - `RMR_Race_Portable.exe` — runs without installing (allow it in Windows Firewall on first start)
+
+            The files are not code-signed: Windows SmartScreen may ask "More info → Run anyway".
+            How to play on a LAN: see LAN_MULTIPLAYER.md.

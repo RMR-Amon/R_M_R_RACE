@@ -8,7 +8,7 @@ export const GAME_ID = 'RMR_race';
 /** wire protocol version: hosts and clients with a different version do not see / join each other */
 export const PROTOCOL_VERSION = 1;
 /** shown in the room list */
-export const GAME_VERSION = '1.1.0';
+export const GAME_VERSION = '1.2.0';
 
 export const NET = {
   /** host server: HTTP (game files for phones / other PCs) + WebSocket on the same TCP port */

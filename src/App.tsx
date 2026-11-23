@@ -13,6 +13,7 @@ import { BOSSES, STORY, bossName, type StoryLevel } from './data/story';
 import { getMap, mapName } from './data/maps';
 import { getCar } from './data/cars';
 import { net, savedSession, useNet, type ResultsView } from './net/session';
+import { desktopApi, setJoinHost, type LaunchRoute } from './net/desktop';
 import type { MatchInfo } from './net/protocol';
 import type { RaceConfig, RaceResult } from './game/types';
 
@@ -110,6 +111,23 @@ export default function App() {
   // reloaded the page in the middle of a LAN session: rejoin the room automatically
   useEffect(() => {
     if (savedSession() && net.resumeSaved()) setScreen('lobby');
+  }, []);
+
+  // desktop: rmrrace://lan (from the website / a shortcut) opens LAN multiplayer directly
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
+  useEffect(() => {
+    const api = desktopApi();
+    if (!api) return;
+    const go = (route: LaunchRoute | null) => {
+      if (!route || route.screen !== 'lan') return;
+      // never yank a player out of a running race or a lobby
+      if (screenRef.current === 'race' || screenRef.current === 'lobby') return;
+      setJoinHost(route.host ?? null);
+      setScreen('mp');
+    };
+    void api.takeLaunchRoute().then(go);
+    return api.onRoute(go);
   }, []);
 
   const startRace = (cfg: RaceConfig) => {

@@ -18,6 +18,38 @@ import { log } from '../server/log';
 const SCHEME = 'app';
 const ORIGIN = `${SCHEME}://rmr`;
 const E2E = !!process.env.RMR_E2E;
+/** RMR_SMOKE=1: start normally, report what the window shows, quit (used to test launches / deep links) */
+const SMOKE = !!process.env.RMR_SMOKE;
+/** custom protocol: rmrrace://lan opens LAN multiplayer, rmrrace://join?host=192.168.1.20:47800 connects by IP */
+const DEEP_SCHEME = 'rmrrace';
+
+export interface LaunchRoute {
+  screen: 'lan';
+  /** host to connect to by IP (from rmrrace://join?host=…) */
+  host?: string;
+}
+
+/** validates an rmrrace:// link from the command line / the OS (never trusted blindly) */
+export function parseDeepLink(raw: string | undefined): LaunchRoute | null {
+  if (!raw || !raw.toLowerCase().startsWith(`${DEEP_SCHEME}:`)) return null;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  const what = (u.hostname || u.pathname.replace(/^\/+/, '')).toLowerCase().replace(/\/$/, '');
+  if (what === 'lan') return { screen: 'lan' };
+  if (what === 'join') {
+    const host = u.searchParams.get('host') ?? '';
+    return /^[\w.-]{1,64}(:\d{1,5})?$/.test(host) ? { screen: 'lan', host } : { screen: 'lan' };
+  }
+  return null;
+}
+
+const linkIn = (argv: string[]) => argv.find((a) => a.toLowerCase().startsWith(`${DEEP_SCHEME}:`));
+/** route waiting for the page to ask for it (first launch) */
+let pendingRoute: LaunchRoute | null = parseDeepLink(linkIn(process.argv));
 
 protocol.registerSchemesAsPrivileged([
   // not "secure": the page must be allowed to open ws:// connections to LAN hosts (192.168.x.x)
@@ -94,6 +126,12 @@ function registerIpc() {
   ipcMain.handle('lan:info', (e) => (trusted(e) ? lan.info() : null));
   ipcMain.handle('lan:start', (e) => (trusted(e) ? lan.start() : null));
   ipcMain.handle('lan:stop', (e) => (trusted(e) ? lan.stop() : null));
+  ipcMain.handle('app:takeRoute', (e) => {
+    if (!trusted(e)) return null;
+    const r = pendingRoute;
+    pendingRoute = null;
+    return r;
+  });
   ipcMain.on('app:open', (e, url: unknown) => {
     if (!trusted(e) || typeof url !== 'string') return;
     if (/^https:\/\/[^\s]+$/.test(url)) void shell.openExternal(url);
@@ -148,11 +186,37 @@ function createWindow() {
   void win.loadURL(`${ORIGIN}/`);
 }
 
+// macOS delivers links through this event
+app.on('open-url', (e, url) => {
+  e.preventDefault();
+  const route = parseDeepLink(url);
+  if (!route) return;
+  if (win) win.webContents.send('app:route', route);
+  else pendingRoute = route;
+});
+
+/** smoke test: what does the window show a few seconds after the launch? */
+async function smokeReport() {
+  const w = win;
+  if (!w) return;
+  await new Promise<void>((r) => w.webContents.once('did-finish-load', () => r()));
+  await new Promise((r) => setTimeout(r, 4000));
+  const text: string = await w.webContents.executeJavaScript('document.body.textContent');
+  const info = lan.info();
+  console.log(`[smoke] lan=${info.running ? `running:${info.port}` : 'stopped'} discovery=${info.discovery} ip=${info.primary}`);
+  console.log(`[smoke] screen=${text.includes('LAN server') || text.includes('LAN-сервер') ? 'lan-multiplayer' : text.includes('R_M_R') ? 'main-menu' : 'other'}`);
+  console.log(`[smoke] text=${text.replace(/\s+/g, ' ').slice(0, 220)}`);
+  app.exit(0);
+}
+
 // one copy per computer: a second one would fight over the LAN ports
-if (!E2E && !app.requestSingleInstanceLock()) {
+if (!E2E && !SMOKE && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  // a link opened while the game runs (Windows / Linux pass it to the second instance)
+  app.on('second-instance', (_e, argv) => {
+    const route = parseDeepLink(linkIn(argv));
+    if (route && win) win.webContents.send('app:route', route);
     if (win) {
       if (win.isMinimized()) win.restore();
       win.focus();
@@ -172,7 +236,10 @@ if (!E2E && !app.requestSingleInstanceLock()) {
       app.exit(code);
       return;
     }
+    // register rmrrace:// for this exe (the installer does it too; this covers the portable build)
+    if (app.isPackaged && !SMOKE) app.setAsDefaultProtocolClient(DEEP_SCHEME);
     createWindow();
+    if (SMOKE) void smokeReport();
     app.on('activate', () => {
       if (!BrowserWindow.getAllWindows().length) createWindow();
     });

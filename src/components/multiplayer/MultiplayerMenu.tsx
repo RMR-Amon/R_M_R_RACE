@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScreenShell, TopBar } from '../ui';
 import { DEFAULT_SETTINGS, ErrorModal, RoomSettingsForm, matchLabel, playerName, profileFromSave } from './common';
 import { THEMES, getMap } from '../../data/maps';
 import { GAME_VERSION, NET } from '../../net/config';
 import { createUrl, lanMode, probeHost, roomUrl, rooms, useRooms } from '../../net/lanService';
-import { DESKTOP_DOWNLOAD_URL, desktopApi, useDesktopLan } from '../../net/desktop';
+import { DESKTOP_LAN_LINK, INSTALLER_URL, RELEASES_URL, desktopApi, takeJoinHost, useDesktopLan } from '../../net/desktop';
 import { net, savedSession, useNet } from '../../net/session';
 import { t, useLang } from '../../i18n';
 import type { DiscoveredRoom } from '../../net/protocol';
@@ -111,18 +111,59 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
   );
 }
 
-/** web version (HTTPS, e.g. Netlify): a browser page cannot host or discover LAN games */
+/**
+ * Web version (HTTPS, e.g. Netlify): a browser page cannot host or discover LAN games.
+ * "Open" hands over to the installed desktop app through its rmrrace:// protocol (the browser
+ * asks the player first); without the app the player downloads the installer from GitHub Releases.
+ */
 function DesktopRequired() {
+  const [tried, setTried] = useState<'no' | 'waiting' | 'opened' | 'missing'>('no');
+  const open = () => {
+    setTried('waiting');
+    let left = false;
+    // the page loses focus / gets hidden when the browser hands the link to the app (or shows its prompt)
+    const mark = () => {
+      left = true;
+    };
+    window.addEventListener('blur', mark, { once: true });
+    document.addEventListener('visibilitychange', mark, { once: true });
+    window.location.href = DESKTOP_LAN_LINK;
+    window.setTimeout(() => {
+      window.removeEventListener('blur', mark);
+      document.removeEventListener('visibilitychange', mark);
+      setTried(left ? 'opened' : 'missing');
+    }, 2500);
+  };
   return (
     <div className="mx-auto max-w-3xl space-y-5 px-4 pb-16 sm:px-8">
-      <section className="panel animate-slideUp space-y-4 p-6 text-center sm:p-10">
-        <div className="text-6xl">🖥️</div>
-        <h2 className="font-display text-3xl uppercase">{t('mp.desktopRequired')}</h2>
-        <p className="mx-auto max-w-xl text-white/75">{t('mp.desktopRequiredText')}</p>
-        <a href={DESKTOP_DOWNLOAD_URL} target="_blank" rel="noreferrer" className="btn-primary inline-flex text-lg">
-          ⬇ {t('mp.download')}
-        </a>
-        <p className="text-xs text-white/50">{t('mp.downloadHint')}</p>
+      <section className="panel relative animate-slideUp space-y-5 overflow-hidden p-6 text-center sm:p-10">
+        <div className="pointer-events-none absolute -top-24 left-1/2 h-48 w-[36rem] -translate-x-1/2 rounded-full bg-sky-500/25 blur-3xl" />
+        <div className="relative text-6xl">🖥️</div>
+        <h2 className="relative font-display text-3xl uppercase">{t('mp.desktopRequired')}</h2>
+        <p className="relative mx-auto max-w-xl text-white/75">{t('mp.desktopRequiredText')}</p>
+        <div className="relative grid gap-3 sm:grid-cols-2">
+          <button onClick={open} className="btn-primary w-full text-base sm:text-lg">
+            🚀 {t('mp.openDesktop')}
+          </button>
+          <a href={INSTALLER_URL} className={`${tried === 'missing' ? 'btn-primary animate-pulse' : 'btn-ghost'} w-full text-base sm:text-lg`}>
+            ⬇ {t('mp.download')}
+          </a>
+        </div>
+        {tried === 'waiting' && <p className="relative text-sm text-sky-200">{t('mp.openWaiting')}</p>}
+        {tried === 'opened' && <p className="relative text-sm text-emerald-300">✓ {t('mp.openOk')}</p>}
+        {tried === 'missing' && <p className="relative text-sm text-amber-200">{t('mp.openMissing')}</p>}
+        <p className="relative text-xs text-white/50">
+          {t('mp.downloadHint')} ·{' '}
+          <a href={RELEASES_URL} target="_blank" rel="noreferrer" className="underline hover:text-white">
+            GitHub Releases
+          </a>
+        </p>
+      </section>
+      <section className="panel space-y-2 p-5 text-sm text-white/70">
+        <div className="font-display text-base text-white">{t('mp.howTitle')}</div>
+        <p>1. {t('mp.how1')}</p>
+        <p>2. {t('mp.how2')}</p>
+        <p>3. {t('mp.how3')}</p>
       </section>
       <section className="panel space-y-2 p-5 text-sm text-white/70">
         <div className="font-display text-base text-white">{t('mp.whyDesktop')}</div>
@@ -202,7 +243,8 @@ function ServiceBadge() {
 function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => void }) {
   const w = useRooms();
   const [spin, setSpin] = useState(false);
-  const [ip, setIp] = useState('');
+  // rmrrace://join?host=… hands over a host to connect to
+  const [ip, setIp] = useState(() => takeJoinHost() ?? '');
   const [probe, setProbe] = useState<{ busy: boolean; rooms: DiscoveredRoom[]; error: string | null }>({ busy: false, rooms: [], error: null });
   const [askCode, setAskCode] = useState<DiscoveredRoom | null>(null);
 
@@ -214,14 +256,24 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
 
   const search = async () => {
     if (!ip.trim()) return;
+    const target = ip;
     setProbe({ busy: true, rooms: [], error: null });
     try {
-      const list = await probeHost(ip);
-      setProbe({ busy: false, rooms: list, error: list.length ? null : t('mp.ipNoRooms', { ip }) });
+      const list = await probeHost(target);
+      setProbe({ busy: false, rooms: list, error: list.length ? null : t('mp.ipNoRooms', { ip: target }) });
     } catch {
-      setProbe({ busy: false, rooms: [], error: t('mp.ipFail', { ip }) });
+      setProbe({ busy: false, rooms: [], error: t('mp.ipFail', { ip: target }) });
     }
   };
+  // a host handed over by a deep link is searched right away
+  const autoSearched = useRef(false);
+  useEffect(() => {
+    if (ip && !autoSearched.current) {
+      autoSearched.current = true;
+      void search();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // rooms found by IP are merged with the LAN list (without duplicates)
   const list = useMemo(() => {

@@ -1,7 +1,7 @@
 {
   "name": "r_m_r_race",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -72,17 +72,22 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "electron/icon.png"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": true,
       "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "R_M_R Race",
+      "deleteAppDataOnUninstall": false,
       "include": "electron/installer.nsh",
-      "artifactName": "RMR_race-Setup-${version}.${ext}"
+      "artifactName": "RMR_Race_Setup.${ext}"
     },
     "portable": {
-      "artifactName": "RMR_race-Portable-${version}.${ext}"
+      "artifactName": "RMR_Race_Portable.${ext}"
     },
     "mac": {
       "target": [
@@ -95,6 +100,16 @@
         "AppImage"
       ],
       "category": "Game"
-    }
+    },
+    "icon": "electron/icon.png",
+    "protocols": [
+      {
+        "name": "R_M_R Race",
+        "schemes": [
+          "rmrrace"
+        ]
+      }
+    ],
+    "publish": null
   }
 }

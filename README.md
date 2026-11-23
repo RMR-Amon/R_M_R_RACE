@@ -10,12 +10,14 @@ npm run dev      # http://localhost:5173
 npm run build    # продакшн-сборка в dist/
 ```
 
-**LAN-мультиплеер (2–8 игроков, одна Wi-Fi сеть, без интернета)** — в Desktop-версии (Windows `.exe`).
-Веб-версия на Netlify остаётся как есть; браузер не умеет LAN (UDP, сервер), поэтому там показывается ссылка на Desktop-версию.
+**LAN-мультиплеер (2–8 игроков, одна Wi-Fi сеть, без интернета)** — в Desktop-версии для Windows 10/11:
+[скачать RMR_Race_Setup.exe](https://github.com/RMR-Amon/R_M_R_RACE/releases/latest/download/RMR_Race_Setup.exe).
+На сайте кнопка «Открыть R_M_R Race Desktop» (`rmrrace://lan`) открывает установленное приложение сразу в LAN-мультиплеере.
 
 ```bash
 npm run desktop     # запустить Desktop-версию из исходников
-npm run dist:win    # собрать установщик и portable .exe в release/
+npm run dist:win    # собрать release/RMR_Race_Setup.exe и RMR_Race_Portable.exe
+git tag v1.2.0 && git push origin v1.2.0   # GitHub Actions соберёт и опубликует релиз
 ```
 
 Архитектура, инструкции, публикация и результаты тестов — [LAN_MULTIPLAYER.md](LAN_MULTIPLAYER.md).
