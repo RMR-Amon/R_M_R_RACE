@@ -9,6 +9,8 @@ interface Props {
   totalCoins: number;
   /** story only: was the level's goal reached */
   passed: boolean | null;
+  /** LAN match: "again" returns to the lobby, "menu" leaves the room */
+  online?: boolean;
   onAgain: () => void;
   onNext: (() => void) | null;
   onStory: (() => void) | null;
@@ -24,7 +26,7 @@ const fmt = (s: number) => {
 
 const MEDAL = ['🥇', '🥈', '🥉'];
 
-export default function Results({ result, totalCoins, passed, onAgain, onNext, onStory, onMenu, onGarage }: Props) {
+export default function Results({ result, totalCoins, passed, online = false, onAgain, onNext, onStory, onMenu, onGarage }: Props) {
   useLang();
   const battle = result.mode.kind === 'battle';
   const [shown, setShown] = useState(0);
@@ -58,8 +60,10 @@ export default function Results({ result, totalCoins, passed, onAgain, onNext, o
           {title}
         </h1>
         <p className="mt-1 text-center text-white/60">
+          {online && '🌐 '}
           {result.mapName} · {battle ? t('res.battle') : t('res.laps', { n: result.mode.kind === 'race' ? result.mode.laps : 0 })} ·{' '}
-          {t('res.place', { n: place })} · {t('res.mistakes', { n: result.mistakes })}
+          {t('res.place', { n: place })}
+          {!online && ` · ${t('res.mistakes', { n: result.mistakes })}`}
         </p>
 
         {level && passed !== null && (
@@ -124,9 +128,9 @@ export default function Results({ result, totalCoins, passed, onAgain, onNext, o
             </button>
           ) : null}
           <button onClick={onAgain} className={onNext ? 'btn-ghost' : 'btn-primary'}>
-            {t('res.again')}
+            {online ? t('res.lobby') : t('res.again')}
           </button>
-          {onStory ? (
+          {online ? null : onStory ? (
             <button onClick={onStory} className="btn-ghost">
               {t('res.story')}
             </button>
@@ -135,8 +139,8 @@ export default function Results({ result, totalCoins, passed, onAgain, onNext, o
               {t('res.garage')}
             </button>
           )}
-          <button onClick={onMenu} className="btn-ghost">
-            {t('res.menu')}
+          <button onClick={onMenu} className={online ? 'btn-ghost sm:col-span-2' : 'btn-ghost'}>
+            {online ? t('res.leave') : t('res.menu')}
           </button>
         </div>
       </div>

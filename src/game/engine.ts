@@ -32,10 +32,30 @@ import { THEME_STYLES } from './themes';
 import { disposeTextureCache } from './textures';
 import { Track } from './track';
 import { buildTrackVisuals, type TrackVisuals } from './trackMesh';
+import { gridSpot, startProgress as gridStartProgress } from './grid';
+import type { RaceEvent, RaceLink } from '../net/raceLink';
+import {
+  F2_FLY,
+  F2_INVULN,
+  F2_SPIN,
+  F2_TELEPORT,
+  F_AIR,
+  F_BOOST,
+  F_BRAKE,
+  F_DRIFT,
+  F_FALLING,
+  F_FROZEN,
+  F_SHIELD,
+  F_THROTTLE,
+  newCarState,
+  type HitKind,
+  type ItemEvent,
+} from '../net/protocol';
 import type {
   CarDef,
   CarParams,
   Difficulty,
+  DriverLook,
   HudState,
   ItemType,
   RaceConfig,
@@ -183,6 +203,14 @@ interface Racer {
   seated: boolean;
   gearbox: Gearbox;
   ai: AiState;
+  /** LAN: player id on the host (-1 in single player) */
+  netId: number;
+  /** LAN: another player's car, driven by the network instead of physics / AI */
+  remote: boolean;
+  /** LAN: the car jumped (respawn / correction) — told to the host once */
+  teleported: boolean;
+  /** LAN: the player's connection dropped */
+  offline: boolean;
 }
 
 interface Projectile {
@@ -206,6 +234,8 @@ interface Projectile {
   label: ReturnType<typeof makeLabel> | null;
   /** seconds until an unlocked missile looks for a new target ahead of it */
   retargetT: number;
+  /** LAN: shot id of the item (-1 in single player) */
+  shot: number;
 }
 
 interface Debris {
@@ -237,6 +267,8 @@ interface Hazard {
   armT: number;
   mesh: THREE.Group;
   t: number;
+  /** LAN: shot id of the item (-1 in single player) */
+  shot: number;
 }
 
 interface ItemBox {
@@ -353,6 +385,10 @@ export class Game {
   private cfg: RaceConfig;
   private cb: GameCallbacks;
   private container: HTMLElement;
+  /** LAN multiplayer link (null in single player) */
+  private readonly net: RaceLink | null;
+  private readonly netState = newCarState();
+  private netStandingsVer = -1;
 
   constructor(
     container: HTMLElement,
@@ -368,6 +404,7 @@ export class Game {
     this.minimap = minimap;
     this.mirrorViews = mirrors;
     this.mirrorsOn = mirrorsOn;
+    this.net = cfg.net ?? null;
     const map = getMap(cfg.mapId);
     this.mapName = mapName(map);
     this.diff = DIFF[cfg.difficulty];
@@ -461,7 +498,8 @@ export class Game {
     audio.init();
     audio.startEngine(this.player.def.engine);
 
-    if (cfg.intro) this.startIntro();
+    // online, everybody starts together on the host's countdown: no walk-in intro
+    if (cfg.intro && !this.net) this.startIntro();
     else {
       this.phase = 'countdown';
       this.racers.forEach((r) => this.seatDriver(r));
@@ -469,6 +507,8 @@ export class Game {
 
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.frame);
+    // the scene is built: the host starts the countdown once every player reports this
+    this.net?.loaded();
   }
 
   // ======================================================================== setup
@@ -501,6 +541,10 @@ export class Game {
   }
 
   private spawnRacers() {
+    if (this.net) {
+      this.spawnNetRacers(this.net);
+      return;
+    }
     const playerDef = paintedCar(getCar(this.cfg.carId), this.cfg.paint);
     const rival = this.cfg.rival;
     let others = CARS.filter((c) => c.id !== playerDef.id && c.id !== rival?.carId);
@@ -543,115 +587,163 @@ export class Game {
         lat = k % 2 ? 7 : -7;
         pos = this.track.pointAt(d, lat);
       }
-      const model = buildCar(def);
-      this.scene.add(model.root);
-      const shieldMesh = makeShieldBubble();
-      shieldMesh.position.y = 1.0;
-      shieldMesh.visible = false;
-      model.root.add(shieldMesh);
-      const iceMesh = makeIceCube();
-      iceMesh.position.y = 1.0;
-      iceMesh.visible = false;
-      model.root.add(iceMesh);
-      const wings = makeWings();
-      wings.visible = false;
-      wings.scale.setScalar(0.001);
-      model.body.add(wings);
-      const warnLabel = makeLabel(150, 64);
-      warnLabel.draw('🚀 !', '#dc2626');
-      warnLabel.sprite.scale.set(2.3, 1, 1);
-      warnLabel.sprite.position.y = 4.5;
-      warnLabel.sprite.visible = false;
-      model.root.add(warnLabel.sprite);
       const isRival = !!rival && ai === 0;
       const name = isPlayer ? t('you') : isRival ? rival!.name : names[ai % names.length];
       const look = isPlayer ? this.cfg.driver : isRival ? rival!.look : randomLook(this.rng);
-      const driver = buildDriver(look);
-      driver.root.scale.setScalar(model.driverScale);
-      let tag: THREE.Sprite | null = null;
-      if (!isPlayer) {
-        tag = makeNameTag(name, def.color);
-        tag.position.y = 3.4;
-        model.root.add(tag);
-      }
-      const proj = this.track.project(pos.x, pos.z);
       const startProgress = this.battle ? d : -this.track.ahead(d, 0);
       const skill = this.rng.range(this.diff.skill[0], this.diff.skill[1]) * (isRival ? 1.02 : 1);
-      const r: Racer = {
-        id: k,
-        name,
-        isPlayer,
-        def,
-        params: carParams(def),
-        model,
-        tag,
-        shieldMesh,
-        iceMesh,
-        x: pos.x,
-        y: 0,
-        z: pos.z,
-        vx: 0,
-        vz: 0,
-        vy: 0,
-        heading: pos.heading,
-        speed: 0,
-        steer: 0,
-        airborne: false,
-        trackIndex: proj.index,
-        lastD: proj.d,
-        lat,
-        progress: startProgress,
-        lapShown: 1,
-        finished: false,
-        finishTime: 0,
-        place: k + 1,
-        item: null,
-        itemCharges: 0,
-        rouletteT: 0,
-        boostT: 0,
-        shieldT: 0,
-        frozenT: 0,
-        spinT: 0,
-        spinVis: 0,
-        fallingT: 0,
-        invulnT: 0,
-        hitCooldown: 0,
-        padCooldown: 0,
-        points: 0,
-        hits: 0,
-        rubber: 1,
-        rollVis: 0,
-        pitchVis: 0,
-        lastThrottle: 0,
-        flyT: 0,
-        wings,
-        warn: warnLabel.sprite,
-        driftT: 0,
-        driftAmt: 0,
-        lastBrake: 0,
-        driver,
-        seated: false,
-        gearbox: new Gearbox(carParams(def).gears, def.engine),
-        ai: {
-          lane: lat,
-          laneTarget: lat,
-          laneTimer: this.rng.range(1, 3),
-          itemT: 1,
-          holdT: 0,
-          skill,
-          stuckT: 0,
-          dodgeFor: null,
-          willDodge: false,
-          slipT: 0,
-          wpX: 0,
-          wpZ: 0,
-          wpT: 0,
-        },
-      };
-      this.racers.push(r);
-      if (isPlayer) this.player = r;
-      this.syncModel(r, 0);
+      this.makeRacer(k, isPlayer, def, name, look, pos, lat, startProgress, skill, -1);
     }
+  }
+
+  /** LAN: one car per player of the match, on the grid slots the host assigned */
+  private spawnNetRacers(net: RaceLink) {
+    const roster = [...net.info.roster].sort((a, b) => a.slot - b.slot);
+    for (const e of roster) {
+      const isPlayer = e.id === net.localId;
+      const def = paintedCar(getCar(e.carId), e.paint ?? undefined);
+      const spot = gridSpot(this.track, e.slot, roster.length, this.battle);
+      const progress = gridStartProgress(this.track, spot, this.battle);
+      const r = this.makeRacer(e.slot, isPlayer, def, isPlayer ? t('you') : e.name, e.look, spot, spot.lat, progress, this.diff.skill[0], e.id);
+      r.remote = !isPlayer;
+    }
+    // rejoining a race that is already running: continue where the host last saw the car
+    const res = net.info.resume;
+    if (res) {
+      const p = this.player;
+      p.x = res.x;
+      p.z = res.z;
+      p.heading = res.heading;
+      const pr = this.track.project(res.x, res.z);
+      p.trackIndex = pr.index;
+      p.lastD = pr.d;
+      p.lat = pr.lat;
+      p.progress = res.progress;
+      p.lapShown = Math.max(1, Math.floor(res.progress / this.track.length) + 1);
+      this.syncModel(p, 0);
+    }
+  }
+
+  private makeRacer(
+    k: number,
+    isPlayer: boolean,
+    def: CarDef,
+    name: string,
+    look: DriverLook,
+    pos: { x: number; z: number; heading: number },
+    lat: number,
+    startProgress: number,
+    skill: number,
+    netId: number,
+  ): Racer {
+    const model = buildCar(def);
+    this.scene.add(model.root);
+    const shieldMesh = makeShieldBubble();
+    shieldMesh.position.y = 1.0;
+    shieldMesh.visible = false;
+    model.root.add(shieldMesh);
+    const iceMesh = makeIceCube();
+    iceMesh.position.y = 1.0;
+    iceMesh.visible = false;
+    model.root.add(iceMesh);
+    const wings = makeWings();
+    wings.visible = false;
+    wings.scale.setScalar(0.001);
+    model.body.add(wings);
+    const warnLabel = makeLabel(150, 64);
+    warnLabel.draw('🚀 !', '#dc2626');
+    warnLabel.sprite.scale.set(2.3, 1, 1);
+    warnLabel.sprite.position.y = 4.5;
+    warnLabel.sprite.visible = false;
+    model.root.add(warnLabel.sprite);
+    const driver = buildDriver(look);
+    driver.root.scale.setScalar(model.driverScale);
+    let tag: THREE.Sprite | null = null;
+    if (!isPlayer) {
+      tag = makeNameTag(name, def.color);
+      tag.position.y = 3.4;
+      model.root.add(tag);
+    }
+    const proj = this.track.project(pos.x, pos.z);
+    const r: Racer = {
+      id: k,
+      name,
+      isPlayer,
+      def,
+      params: carParams(def),
+      model,
+      tag,
+      shieldMesh,
+      iceMesh,
+      x: pos.x,
+      y: 0,
+      z: pos.z,
+      vx: 0,
+      vz: 0,
+      vy: 0,
+      heading: pos.heading,
+      speed: 0,
+      steer: 0,
+      airborne: false,
+      trackIndex: proj.index,
+      lastD: proj.d,
+      lat,
+      progress: startProgress,
+      lapShown: 1,
+      finished: false,
+      finishTime: 0,
+      place: k + 1,
+      item: null,
+      itemCharges: 0,
+      rouletteT: 0,
+      boostT: 0,
+      shieldT: 0,
+      frozenT: 0,
+      spinT: 0,
+      spinVis: 0,
+      fallingT: 0,
+      invulnT: 0,
+      hitCooldown: 0,
+      padCooldown: 0,
+      points: 0,
+      hits: 0,
+      rubber: 1,
+      rollVis: 0,
+      pitchVis: 0,
+      lastThrottle: 0,
+      flyT: 0,
+      wings,
+      warn: warnLabel.sprite,
+      driftT: 0,
+      driftAmt: 0,
+      lastBrake: 0,
+      driver,
+      seated: false,
+      gearbox: new Gearbox(carParams(def).gears, def.engine),
+      ai: {
+        lane: lat,
+        laneTarget: lat,
+        laneTimer: this.rng.range(1, 3),
+        itemT: 1,
+        holdT: 0,
+        skill,
+        stuckT: 0,
+        dodgeFor: null,
+        willDodge: false,
+        slipT: 0,
+        wpX: 0,
+        wpZ: 0,
+        wpT: 0,
+      },
+      netId,
+      remote: false,
+      teleported: false,
+      offline: false,
+    };
+    this.racers.push(r);
+    if (isPlayer) this.player = r;
+    this.syncModel(r, 0);
+    return r;
   }
 
   private buildMinimap() {
@@ -699,6 +791,8 @@ export class Game {
   }
 
   setPaused(p: boolean) {
+    // a LAN race cannot be paused: the others keep driving
+    if (this.net) return;
     this.paused = p;
     if (p) audio.quiet();
   }
@@ -747,7 +841,7 @@ export class Game {
   }
 
   private onVisibility = () => {
-    if (document.hidden && !this.ended && !this.paused) this.cb.onPauseRequest();
+    if (document.hidden && !this.ended && !this.paused && !this.net) this.cb.onPauseRequest();
   };
 
   private onOrientation = () => {
@@ -833,10 +927,12 @@ export class Game {
     if (dt > 0.05) dt = 0.05;
     if (dt <= 0) return;
     if (!this.paused) {
+      if (this.net) this.handleNetEvents(this.net.drain());
       // sub-step physics for stability at low frame rates
       const steps = Math.ceil(dt / (1 / 90));
       const h = dt / steps;
       for (let i = 0; i < steps; i++) this.step(h);
+      if (this.net && this.phase !== 'intro') this.sendNetState();
       this.updateVisuals(dt);
     }
     this.renderer.shadowMap.needsUpdate = true;
@@ -895,7 +991,11 @@ export class Game {
     }
 
     if (this.phase === 'countdown') {
-      this.countdown -= dt;
+      if (this.net) {
+        // online: the countdown runs on the host clock, so every player gets the green light together
+        const go = this.net.goAt;
+        this.countdown = go === null ? 99 : Math.min(4, 1 + (go - this.net.now()) / 1000);
+      } else this.countdown -= dt;
       const c = Math.ceil(this.countdown - 1);
       if (c < this.lastBeep && c >= 0) {
         this.lastBeep = c;
@@ -906,12 +1006,19 @@ export class Game {
         this.phase = 'racing';
       }
     } else if (!this.ended) {
-      this.raceTime += dt;
+      // online: one shared race clock (host time since the green light)
+      if (this.net && this.net.goAt !== null) this.raceTime = Math.max(0, (this.net.now() - this.net.goAt) / 1000);
+      else this.raceTime += dt;
     }
 
     const racing = this.phase !== 'countdown';
 
     for (const r of this.racers) {
+      if (r.remote) {
+        this.applyRemote(r);
+        this.interact(r, dt);
+        continue;
+      }
       let ctl: Controls;
       if (!racing) ctl = { throttle: 0, brake: 0, steer: 0, drift: false };
       else if (r.isPlayer && !r.finished && !this.autopilot) {
@@ -1294,6 +1401,7 @@ export class Game {
     r.flyT = 0;
     r.invulnT = 2;
     r.ai.stuckT = 0;
+    r.teleported = true;
     const pr = tr.project(p.x, p.z);
     r.trackIndex = pr.index;
     r.lastD = pr.d;
@@ -1362,7 +1470,8 @@ export class Game {
       box.active = false;
       box.respawn = this.battle ? 2.5 : 4;
       this.particles.burst(box.x, box.y, box.z, 26, 9, ['#f472b6', '#22d3ee', '#facc15', '#a3e635'], 0.7, 0.6, 6);
-      if (!r.item && r.rouletteT <= 0) {
+      // another player's box is opened on their own screen; here it only disappears
+      if (!r.remote && !r.item && r.rouletteT <= 0) {
         this.stats.boxes++;
         r.item = this.rollItem(r);
         r.itemCharges = r.item === 'ice' ? 3 : 1;
@@ -1497,6 +1606,8 @@ export class Game {
       for (let j = i + 1; j < rs.length; j++) {
         const a = rs[i];
         const b = rs[j];
+        // online every game only moves its own car; the other player's game pushes theirs
+        if (a.remote && b.remote) continue;
         if (a.fallingT > 0 || b.fallingT > 0) continue;
         if (Math.abs(a.y - b.y) > 1.6) continue;
         const dx = b.x - a.x;
@@ -1510,8 +1621,8 @@ export class Game {
         const overlap = minD - d;
         const ma = a.params.mass;
         const mb = b.params.mass;
-        const ta = mb / (ma + mb);
-        const tb = ma / (ma + mb);
+        const ta = a.remote ? 0 : mb / (ma + mb);
+        const tb = b.remote ? 0 : ma / (ma + mb);
         a.x -= nx * overlap * ta;
         a.z -= nz * overlap * ta;
         b.x += nx * overlap * tb;
@@ -1523,8 +1634,8 @@ export class Game {
           a.vz -= nz * imp * ta;
           b.vx += nx * imp * tb;
           b.vz += nz * imp * tb;
-          a.speed = a.vx * Math.sin(a.heading) + a.vz * Math.cos(a.heading);
-          b.speed = b.vx * Math.sin(b.heading) + b.vz * Math.cos(b.heading);
+          if (!a.remote) a.speed = a.vx * Math.sin(a.heading) + a.vz * Math.cos(a.heading);
+          if (!b.remote) b.speed = b.vx * Math.sin(b.heading) + b.vz * Math.cos(b.heading);
           if (rel > 5) {
             this.particles.burst(a.x + nx * CAR_R, 0.9, a.z + nz * CAR_R, 10, 7, ['#ffd166', '#ffffff'], 0.45, 0.35, 14);
             if (a.isPlayer || b.isPlayer) {
@@ -1591,60 +1702,44 @@ export class Game {
     const item = r.item;
     let consumed = true;
     this.stats.items++;
+    // LAN: every item the local player uses is announced to the other players
+    const online = !!this.net && r === this.player;
+    const shot = online ? this.net!.nextShot() : -1;
+    let ev: ItemEvent = { kind: item, shot, x: r.x, y: r.y, z: r.z, heading: r.heading, speed: r.speed, target: -1 };
     switch (item) {
       case 'missile': {
         const target = this.findMissileTarget(r);
-        const mesh = makeMissile();
-        // fuse countdown floating above the missile
-        const label = makeLabel(150, 60);
-        label.sprite.scale.set(2.3, 0.92, 1);
-        label.sprite.position.y = 1.5;
-        mesh.add(label.sprite);
-        this.scene.add(mesh);
         // launched from the nose, pointing down the road (never backwards, even if the car is sideways)
         const sx = r.x + fx * 3.2;
         const sz = r.z + fz * 3.2;
-        const pr = this.track.project(sx, sz, r.trackIndex);
         let heading = r.heading;
         if (!this.track.oval) {
+          const pr = this.track.project(sx, sz, r.trackIndex);
           const s = this.track.samples[pr.index];
           const road = Math.atan2(s.tx, s.tz);
           heading = road + clamp(wrapAngle(r.heading - road), -0.5, 0.5);
         }
-        this.projectiles.push({
-          kind: 'missile', owner: r, target,
-          x: sx, y: r.y + 1.3, z: sz, heading,
-          speed: Math.max(55, Math.max(0, r.speed) + 22), life: MISSILE_FUSE,
-          index: pr.index, mesh, d: pr.d, lat: pr.lat, dodged: null, label, retargetT: 0,
-        });
-        if (r.isPlayer || this.near(r, 60)) audio.shoot();
+        const speed = Math.max(55, Math.max(0, r.speed) + 22);
+        this.launchMissile(r, sx, r.y + 1.3, sz, heading, speed, target, shot);
+        ev = { ...ev, x: sx, y: r.y + 1.3, z: sz, heading, speed, target: target?.netId ?? -1 };
         break;
       }
       case 'ice': {
-        const mesh = makeIceShot();
-        this.scene.add(mesh);
-        this.projectiles.push({
-          kind: 'ice', owner: r, target: null,
-          x: r.x + fx * 3, y: r.y + 1.2, z: r.z + fz * 3, heading: r.heading, speed: Math.max(80, r.speed + 40), life: 1.5,
-          index: r.trackIndex, mesh, d: r.lastD, lat: r.lat, dodged: null, label: null, retargetT: 0,
-        });
+        const x = r.x + fx * 3;
+        const z = r.z + fz * 3;
+        const speed = Math.max(80, r.speed + 40);
+        this.launchIce(r, x, r.y + 1.2, z, r.heading, speed, shot);
+        ev = { ...ev, x, y: r.y + 1.2, z, speed };
         r.itemCharges--;
         consumed = r.itemCharges <= 0;
-        if (r.isPlayer || this.near(r, 60)) audio.ice();
         break;
       }
       case 'bomb':
       case 'oil': {
-        const mesh = item === 'bomb' ? makeBomb() : makeOil();
         const x = r.x - fx * 4.5;
         const z = r.z - fz * 4.5;
-        const pr = this.track.project(x, z, r.trackIndex);
-        const y = this.track.groundAt(pr.d);
-        mesh.position.set(x, Math.max(0, y), z);
-        this.scene.add(mesh);
-        this.hazards.push({ kind: item, owner: r, x, y: Math.max(0, y), z, d: pr.d, lat: pr.lat, armT: 0.6, mesh, t: 0 });
-        // keep the track from filling up
-        if (this.hazards.length > 14) this.removeHazard(this.hazards[0]);
+        this.dropHazard(r, item, x, z, shot);
+        ev = { ...ev, x, z };
         if (r.isPlayer) audio.drop();
         break;
       }
@@ -1670,9 +1765,246 @@ export class Game {
         } else if (this.near(r, 60)) audio.takeoff();
         break;
     }
+    if (online) this.net!.sendItem(ev);
     if (consumed) {
       r.item = null;
       r.itemCharges = 0;
+    }
+  }
+
+  private launchMissile(owner: Racer, x: number, y: number, z: number, heading: number, speed: number, target: Racer | null, shot: number) {
+    const mesh = makeMissile();
+    // fuse countdown floating above the missile
+    const label = makeLabel(150, 60);
+    label.sprite.scale.set(2.3, 0.92, 1);
+    label.sprite.position.y = 1.5;
+    mesh.add(label.sprite);
+    this.scene.add(mesh);
+    const pr = this.track.project(x, z, owner.trackIndex);
+    this.projectiles.push({
+      kind: 'missile', owner, target,
+      x, y, z, heading,
+      speed, life: MISSILE_FUSE,
+      index: pr.index, mesh, d: pr.d, lat: pr.lat, dodged: null, label, retargetT: 0, shot,
+    });
+    if (owner.isPlayer || this.near(owner, 60)) audio.shoot();
+  }
+
+  private launchIce(owner: Racer, x: number, y: number, z: number, heading: number, speed: number, shot: number) {
+    const mesh = makeIceShot();
+    this.scene.add(mesh);
+    const pr = this.track.project(x, z, owner.trackIndex);
+    this.projectiles.push({
+      kind: 'ice', owner, target: null,
+      x, y, z, heading, speed, life: 1.5,
+      index: pr.index, mesh, d: pr.d, lat: pr.lat, dodged: null, label: null, retargetT: 0, shot,
+    });
+    if (owner.isPlayer || this.near(owner, 60)) audio.ice();
+  }
+
+  private dropHazard(owner: Racer, kind: 'bomb' | 'oil', x: number, z: number, shot: number) {
+    const mesh = kind === 'bomb' ? makeBomb() : makeOil();
+    const pr = this.track.project(x, z, owner.trackIndex);
+    const y = Math.max(0, this.track.groundAt(pr.d));
+    mesh.position.set(x, y, z);
+    this.scene.add(mesh);
+    this.hazards.push({ kind, owner, x, y, z, d: pr.d, lat: pr.lat, armT: 0.6, mesh, t: 0, shot });
+    // keep the track from filling up
+    if (this.hazards.length > 14) this.removeHazard(this.hazards[0]);
+  }
+
+  // ======================================================================== LAN multiplayer
+
+  private byNetId(id: number): Racer | undefined {
+    return this.racers.find((r) => r.netId === id);
+  }
+
+  /** another player's car: position and visual state come from the interpolated snapshots */
+  private applyRemote(r: Racer) {
+    const s = this.netState;
+    if (!this.net!.sampleRemote(r.netId, s)) return;
+    r.x = s.x;
+    r.y = s.y;
+    r.z = s.z;
+    r.vx = s.vx;
+    r.vy = s.vy;
+    r.vz = s.vz;
+    r.heading = s.heading;
+    r.speed = s.speed;
+    r.steer = s.steer;
+    const f = s.flags;
+    const f2 = s.flags2;
+    r.lastThrottle = f & F_THROTTLE ? 1 : 0;
+    r.lastBrake = f & F_BRAKE ? 1 : 0;
+    r.boostT = f & F_BOOST ? 1 : 0;
+    r.shieldT = f & F_SHIELD ? 2 : 0;
+    r.frozenT = f & F_FROZEN ? 1 : 0;
+    r.airborne = (f & F_AIR) !== 0;
+    r.fallingT = f & F_FALLING ? 0.8 : 0;
+    r.flyT = f2 & F2_FLY ? 1 : 0;
+    r.spinT = f2 & F2_SPIN ? 0.5 : 0;
+    r.invulnT = f2 & F2_INVULN ? 1 : 0;
+    r.driftAmt = s.drift;
+    r.spinVis = s.spin;
+    const pr = this.track.project(r.x, r.z, r.trackIndex);
+    r.trackIndex = pr.index;
+    r.lastD = pr.d;
+    r.lat = pr.lat;
+  }
+
+  /** the local car's state goes to the host (throttled inside the link) */
+  private sendNetState() {
+    const p = this.player;
+    const s = this.netState;
+    s.t = performance.now();
+    s.x = p.x;
+    s.y = p.y;
+    s.z = p.z;
+    s.vx = p.vx;
+    s.vy = p.vy;
+    s.vz = p.vz;
+    s.heading = p.heading;
+    s.speed = p.speed;
+    s.steer = p.steer;
+    s.flags =
+      (p.lastThrottle > 0 ? F_THROTTLE : 0) |
+      (p.lastBrake > 0 ? F_BRAKE : 0) |
+      (p.driftT > 0 ? F_DRIFT : 0) |
+      (p.boostT > 0 ? F_BOOST : 0) |
+      (p.shieldT > 0 ? F_SHIELD : 0) |
+      (p.frozenT > 0 ? F_FROZEN : 0) |
+      (p.airborne ? F_AIR : 0) |
+      (p.fallingT > 0 ? F_FALLING : 0);
+    s.flags2 = (p.flyT > 0 ? F2_FLY : 0) | (p.spinT > 0 ? F2_SPIN : 0) | (p.invulnT > 0 ? F2_INVULN : 0) | (p.teleported ? F2_TELEPORT : 0);
+    s.drift = p.driftAmt;
+    s.spin = p.spinVis;
+    if (this.net!.pushLocal(s)) p.teleported = false;
+  }
+
+  private handleNetEvents(events: RaceEvent[]) {
+    for (const ev of events) {
+      switch (ev.k) {
+        case 'item': {
+          const owner = this.byNetId(ev.from);
+          if (owner?.remote) this.spawnRemoteItem(owner, ev.e);
+          break;
+        }
+        case 'hit': {
+          // the item that hit is gone on every screen
+          const h = this.hazards.find((x) => x.shot === ev.shot && x.owner.netId === ev.owner);
+          if (h) this.removeHazard(h);
+          const pi = this.projectiles.findIndex((x) => x.shot === ev.shot && x.owner.netId === ev.owner);
+          if (pi >= 0) this.removeProjectile(pi);
+          if (ev.owner === this.net!.localId) this.flash(this.battle ? t('msg.plusPoint') : t('msg.hit'));
+          break;
+        }
+        case 'left': {
+          const r = this.byNetId(ev.id);
+          if (r?.remote) this.removeRacer(r);
+          break;
+        }
+        case 'correct': {
+          // the host rejected our car state: back to the last position it accepted
+          const p = this.player;
+          const pr = this.track.project(ev.x, ev.z);
+          let delta = pr.d - p.lastD;
+          if (delta > this.track.length / 2) delta -= this.track.length;
+          if (delta < -this.track.length / 2) delta += this.track.length;
+          p.progress += delta;
+          p.x = ev.x;
+          p.y = Math.max(ev.y, this.track.groundAt(pr.d));
+          p.z = ev.z;
+          p.heading = ev.heading;
+          p.vx = p.vz = p.vy = 0;
+          p.speed = 0;
+          p.fallingT = 0;
+          p.airborne = false;
+          p.trackIndex = pr.index;
+          p.lastD = pr.d;
+          p.lat = pr.lat;
+          p.teleported = true;
+          break;
+        }
+      }
+    }
+  }
+
+  /** replays an item another player used */
+  private spawnRemoteItem(owner: Racer, e: ItemEvent) {
+    switch (e.kind) {
+      case 'missile':
+        this.launchMissile(owner, e.x, e.y, e.z, e.heading, e.speed, e.target >= 0 ? this.byNetId(e.target) ?? null : null, e.shot);
+        break;
+      case 'ice':
+        this.launchIce(owner, e.x, e.y, e.z, e.heading, e.speed, e.shot);
+        break;
+      case 'bomb':
+      case 'oil':
+        this.dropHazard(owner, e.kind, e.x, e.z, e.shot);
+        if (this.near(owner, 50)) audio.drop();
+        break;
+      case 'fly':
+        if (this.near(owner, 60)) audio.takeoff();
+        break;
+      default:
+        // nitro / shield are visible through the car's state flags
+        break;
+    }
+  }
+
+  /** a player left the match: their car disappears */
+  private removeRacer(r: Racer) {
+    const i = this.racers.indexOf(r);
+    if (i < 0 || r === this.player) return;
+    this.racers.splice(i, 1);
+    for (const p of this.projectiles) {
+      if (p.target === r) p.target = null;
+      if (p.dodged === r) p.dodged = null;
+    }
+    for (let k = 0; k < 2; k++) this.skids.lift(String(r.id * 4 + k));
+    r.tag?.material.map?.dispose();
+    (r.warn.material as THREE.SpriteMaterial).map?.dispose();
+    if (!r.seated) r.driver.dispose();
+    this.scene.remove(r.model.root);
+    r.model.root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      m.geometry?.dispose();
+      const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+      for (const x of Array.isArray(mat) ? mat : mat ? [mat] : []) x.dispose();
+    });
+  }
+
+  /** LAN: places, laps, finish and points come from the host */
+  private netRank(net: RaceLink) {
+    if (net.standingsVersion !== this.netStandingsVer) {
+      this.netStandingsVer = net.standingsVersion;
+      for (const r of this.racers) {
+        const st = net.standings.get(r.netId);
+        if (!st) continue;
+        r.place = st.place;
+        r.points = st.points;
+        r.hits = st.hits;
+        r.offline = st.status === 'reconnecting';
+        if (r.remote) r.progress = st.progress;
+        if (st.finished && !r.finished) {
+          r.finished = true;
+          r.finishTime = st.finishTime ?? this.raceTime;
+          if (r.isPlayer) {
+            this.phase = 'finished';
+            audio.finish();
+            this.flash(r.place === 1 ? t('msg.win') : t('msg.finish', { place: r.place }));
+          }
+        }
+      }
+    }
+    // lap messages from the local progress (instant feedback; the host confirms the finish)
+    const p = this.player;
+    if (this.battle || this.phase === 'countdown' || p.finished) return;
+    const lap = Math.floor(p.progress / this.track.length) + 1;
+    if (lap > p.lapShown && lap <= this.laps) {
+      p.lapShown = lap;
+      audio.lap();
+      this.flash(lap === this.laps ? t('msg.lastLap') : t('msg.lap', { lap, laps: this.laps }));
     }
   }
 
@@ -1683,6 +2015,8 @@ export class Game {
 
   /** returns true if the hit landed */
   private applyHit(target: Racer, kind: ItemType, owner: Racer): boolean {
+    // online, another player's car only SHOWS the hit here — their own game applies it for real
+    const shown = !!this.net && target.remote;
     if (target.shieldT > 0 || target.invulnT > 0) {
       this.particles.burst(target.x, target.y + 1.2, target.z, 30, 10, ['#7dd3fc', '#ffffff'], 0.6, 0.5);
       if (target.isPlayer) this.flash(t('msg.shieldBlock'));
@@ -1692,23 +2026,29 @@ export class Game {
     switch (kind) {
       case 'missile':
       case 'bomb':
-        target.airborne = true;
-        target.vy = kind === 'bomb' ? 11 : 9;
-        target.spinT = 1.2;
-        target.speed *= 0.25;
-        target.vx *= 0.3;
-        target.vz *= 0.3;
+        if (!shown) {
+          target.airborne = true;
+          target.vy = kind === 'bomb' ? 11 : 9;
+          target.spinT = 1.2;
+          target.speed *= 0.25;
+          target.vx *= 0.3;
+          target.vz *= 0.3;
+        }
         this.explosion(target.x, target.y + 1, target.z);
         break;
       case 'oil':
-        target.spinT = 1.4;
-        target.speed *= 0.6;
+        if (!shown) {
+          target.spinT = 1.4;
+          target.speed *= 0.6;
+        }
         this.smoke.burst(target.x, 0.4, target.z, 14, 4, ['#111827', '#1f2937'], 1.4, 0.7);
         if (target.isPlayer || this.near(target, 50)) audio.splat();
         break;
       case 'ice':
-        target.frozenT = 1.5;
-        target.spinT = 0;
+        if (!shown) {
+          target.frozenT = 1.5;
+          target.spinT = 0;
+        }
         this.particles.burst(target.x, target.y + 1.2, target.z, 30, 9, ['#cffafe', '#67e8f9', '#ffffff'], 0.7, 0.7, 4);
         if (target.isPlayer || this.near(target, 60)) audio.ice();
         break;
@@ -1716,7 +2056,9 @@ export class Game {
         break;
     }
     this.stats.hits++;
-    if (owner !== target) {
+    if (shown) return true;
+    // online the host counts hits and points (the shooter hears about it from the host)
+    if (owner !== target && !this.net) {
       owner.hits++;
       owner.points++;
       if (owner.isPlayer) this.flash(this.battle ? t('msg.plusPoint') : t('msg.hit'));
@@ -1803,7 +2145,9 @@ export class Game {
           if (r === p.owner && p.life > (p.kind === 'missile' ? MISSILE_FUSE - 0.4 : 1.3)) continue;
           if (r.fallingT > 0 || r === p.dodged) continue;
           if ((r.x - p.x) ** 2 + (r.z - p.z) ** 2 < 2.6 * 2.6 && Math.abs(r.y + 1 - p.y) < 2.5) {
-            this.applyHit(r, p.kind, p.owner);
+            const landed = this.applyHit(r, p.kind, p.owner);
+            // online the victim reports the hit; the host checks the shot and scores it
+            if (landed && this.net && r === this.player && p.owner.remote && p.shot >= 0) this.net.sendHit(p.owner.netId, p.shot, p.kind);
             dead = true;
             break;
           }
@@ -1816,16 +2160,21 @@ export class Game {
           this.explosion(p.x, p.y, p.z);
           if (p.owner.isPlayer) this.flash(t('msg.missileGone'));
         }
-        p.label?.sprite.material.map?.dispose();
-        this.scene.remove(p.mesh);
-        p.mesh.traverse((o) => {
-          const m = o as THREE.Mesh;
-          m.geometry?.dispose();
-          (m.material as THREE.Material | undefined)?.dispose();
-        });
-        this.projectiles.splice(i, 1);
+        this.removeProjectile(i);
       }
     }
+  }
+
+  private removeProjectile(i: number) {
+    const p = this.projectiles[i];
+    p.label?.sprite.material.map?.dispose();
+    this.scene.remove(p.mesh);
+    p.mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      m.geometry?.dispose();
+      (m.material as THREE.Material | undefined)?.dispose();
+    });
+    this.projectiles.splice(i, 1);
   }
 
   /**
@@ -1934,7 +2283,8 @@ export class Game {
       for (const r of this.racers) {
         if (r.fallingT > 0 || r.y > 2) continue;
         if ((r.x - h.x) ** 2 + (r.z - h.z) ** 2 < radius * radius) {
-          this.applyHit(r, h.kind, h.owner);
+          const landed = this.applyHit(r, h.kind, h.owner);
+          if (landed && this.net && r === this.player && h.owner.remote && h.shot >= 0) this.net.sendHit(h.owner.netId, h.shot, h.kind as HitKind);
           if (h.kind === 'bomb' && r.shieldT > 0) this.explosion(h.x, 1, h.z);
           // one-time use: bomb and oil disappear after a single hit
           this.removeHazard(h);
@@ -2300,6 +2650,10 @@ export class Game {
   // ======================================================================== race state
 
   private rank() {
+    if (this.net) {
+      this.netRank(this.net);
+      return;
+    }
     const sorted = [...this.racers].sort((a, b) => {
       if (this.battle) return b.points - a.points || b.hits - a.hits || a.id - b.id;
       if (a.finished && b.finished) return a.finishTime - b.finishTime;
@@ -2332,6 +2686,8 @@ export class Game {
   }
 
   private checkEnd(dt: number) {
+    // online the host ends the match for everybody at the same time
+    if (this.net) return;
     if (this.ended || this.phase === 'countdown' || this.phase === 'intro') return;
     if (this.battle) {
       if (this.raceTime >= this.duration && this.endTimer < 0) {
@@ -2406,6 +2762,7 @@ export class Game {
         lap: clamp(Math.floor(r.progress / L) + 1, 1, Math.max(1, this.laps)),
         points: r.points,
         finished: r.finished,
+        offline: r.offline,
       }));
     let incoming: HudState['incoming'] = null;
     let ownMissile: number | null = null;
@@ -2445,6 +2802,7 @@ export class Game {
       standings,
       message: this.message,
       messageId: this.messageId,
+      net: this.net ? { waiting: this.net.goAt === null, rtt: this.net.rtt, conn: this.net.connState } : null,
     });
   }
 

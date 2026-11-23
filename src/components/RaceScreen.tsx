@@ -85,6 +85,8 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
   }, [mirrors]);
 
   const battle = config.mode.kind === 'battle';
+  const online = !!config.net;
+  const netHud = hud?.net ?? null;
 
   return (
     <div className="relative h-[100dvh] w-full touch-none select-none overflow-hidden bg-black">
@@ -117,6 +119,7 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
 
         <div className="flex flex-col items-end gap-2">
           <div className="pointer-events-auto flex gap-2">
+            {netHud && <NetChip rtt={netHud.rtt} conn={netHud.conn} />}
             <button
               onClick={onToggleMirrors}
               title={t('hud.mirrors')}
@@ -217,6 +220,22 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
         </div>
       )}
       {hud && <Toast text={hud.message} id={hud.messageId} />}
+
+      {/* -------- LAN: waiting for the other players to load / connection trouble */}
+      {netHud?.waiting && hud?.phase === 'countdown' && (
+        <div className="pointer-events-none absolute inset-0 grid place-items-center">
+          <span className="animate-pulse rounded-2xl bg-black/55 px-5 py-3 text-center font-display text-xl text-white ring-1 ring-white/20 backdrop-blur sm:text-3xl">
+            ⏳ {t('hud.waiting')}
+          </span>
+        </div>
+      )}
+      {netHud?.conn === 'reconnecting' && (
+        <div className="pointer-events-none absolute inset-x-0 top-[38%] flex justify-center px-4">
+          <span className="animate-pulse rounded-2xl bg-amber-500/90 px-4 py-2 text-center font-display text-base text-black ring-2 ring-white/70 sm:text-xl">
+            📡 {t('hud.reconnecting')}
+          </span>
+        </div>
+      )}
       {hud?.frozen && <div className="pointer-events-none absolute inset-0 bg-cyan-200/20 shadow-[inset_0_0_120px_rgba(165,243,252,.9)]" />}
       {hud && hud.boost > 0 && <div className="pointer-events-none absolute inset-0 shadow-[inset_0_0_140px_rgba(251,191,36,.35)]" />}
 
@@ -229,9 +248,9 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
           <div className="panel w-full max-w-sm animate-pop space-y-3 p-6 text-center">
             <h2 className="font-display text-4xl">{t('pause.title')}</h2>
             <button onClick={() => setPaused(false)} className="btn-primary w-full">{t('pause.resume')}</button>
-            <button onClick={onRestart} className="btn-ghost w-full">{t('pause.restart')}</button>
-            <button onClick={onExit} className="btn-ghost w-full">{t('pause.menu')}</button>
-            <p className="pt-2 text-xs text-white/50">{t('pause.hint')}</p>
+            {!online && <button onClick={onRestart} className="btn-ghost w-full">{t('pause.restart')}</button>}
+            <button onClick={onExit} className="btn-ghost w-full">{online ? t('pause.leaveMatch') : t('pause.menu')}</button>
+            <p className="pt-2 text-xs text-white/50">{online ? t('pause.onlineHint') : t('pause.hint')}</p>
           </div>
         </div>
       )}
@@ -251,6 +270,16 @@ const MirrorFrame = forwardRef<HTMLDivElement, { className: string; label?: stri
     </div>
   );
 });
+
+function NetChip({ rtt, conn }: { rtt: number; conn: string }) {
+  const bad = conn !== 'open';
+  const tone = bad ? 'bg-amber-500/60 ring-amber-200/70' : rtt < 0 || rtt > 150 ? 'bg-rose-500/45 ring-rose-300/50' : rtt > 60 ? 'bg-amber-400/40 ring-amber-200/50' : 'bg-emerald-500/35 ring-emerald-300/50';
+  return (
+    <span className={`hud-btn grid w-auto place-items-center rounded-xl px-2 font-mono text-[10px] font-bold ring-1 backdrop-blur sm:text-xs ${tone}`} style={{ width: 'auto' }}>
+      {bad ? '📡' : `${Math.max(0, rtt)}ms`}
+    </span>
+  );
+}
 
 function MissileWarning({ time, dist, touch }: { time: number; dist: number; touch: boolean }) {
   return (
@@ -274,6 +303,7 @@ function Standings({ hud, battle }: { hud: HudState; battle: boolean }) {
           <span className="w-4 font-display text-white/60">{s.place}</span>
           <span className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-black/50" style={{ background: s.color }} />
           <span className="flex-1 truncate">{s.name}</span>
+          {s.offline && <span title={t('hud.offline')}>📡</span>}
           {battle ? <span className="font-display text-amber-300">{s.points}</span> : s.finished ? <span>🏁</span> : null}
         </div>
       ))}

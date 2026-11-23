@@ -1,3 +1,5 @@
+import type { RaceLink } from '../net/raceLink';
+
 export type ThemeId = 'city' | 'desert' | 'ocean' | 'pixel' | 'candy';
 
 export type BodyType = 'sport' | 'muscle' | 'f1' | 'suv' | 'buggy' | 'cyber' | 'retro' | 'kart' | 'van';
@@ -82,6 +84,8 @@ export interface RaceConfig {
   rival?: { carId: string; name: string; look: DriverLook };
   intro: boolean;
   quality: Quality;
+  /** LAN multiplayer: link to the match on the host (absent in single player) */
+  net?: RaceLink;
 }
 
 export interface StandingRow {
@@ -93,6 +97,8 @@ export interface StandingRow {
   lap: number;
   points: number;
   finished: boolean;
+  /** LAN: the player's connection dropped (the host keeps the slot for a while) */
+  offline?: boolean;
 }
 
 export interface HudState {
@@ -127,6 +133,8 @@ export interface HudState {
   standings: StandingRow[];
   message: string;
   messageId: number;
+  /** LAN multiplayer status (null in single player) */
+  net: { waiting: boolean; rtt: number; conn: 'connecting' | 'open' | 'reconnecting' | 'closed' } | null;
 }
 
 export interface ResultRow {

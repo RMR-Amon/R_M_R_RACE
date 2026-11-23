@@ -26,6 +26,8 @@ export interface SaveData {
   storyDone: number;
   /** best finishing place per story level */
   storyBest: Record<number, number>;
+  /** name shown to other players in LAN multiplayer */
+  netName: string;
 }
 
 /** logical save name — stored under a hashed key, obfuscated and signed (see secure.ts) */
@@ -54,6 +56,7 @@ const DEFAULT: SaveData = {
   ownedAccessories: [],
   storyDone: 0,
   storyBest: {},
+  netName: '',
 };
 
 function load(): SaveData {
@@ -67,6 +70,7 @@ function load(): SaveData {
     // free cars are always owned
     for (const c of CARS) if (c.price === 0 && !data.owned.includes(c.id)) data.owned.push(c.id);
     if (!data.owned.includes(data.selectedCar)) data.selectedCar = DEFAULT.selectedCar;
+    if (typeof data.netName !== 'string') data.netName = '';
     return data;
   } catch {
     return DEFAULT;

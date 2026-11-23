@@ -12,10 +12,11 @@ interface Props {
   onPlay: () => void;
   onStory: () => void;
   onGarage: () => void;
+  onMultiplayer: () => void;
   onToggleSound: () => void;
 }
 
-export default function MainMenu({ save, update, onPlay, onStory, onGarage, onToggleSound }: Props) {
+export default function MainMenu({ save, update, onPlay, onStory, onGarage, onMultiplayer, onToggleSound }: Props) {
   useLang();
   const [settings, setSettings] = useState(false);
   const car = paintedCar(getCar(save.selectedCar), save.paints[save.selectedCar]);
@@ -62,6 +63,12 @@ export default function MainMenu({ save, update, onPlay, onStory, onGarage, onTo
                   {t('menu.garage')}
                 </button>
               </div>
+              <button
+                onClick={onMultiplayer}
+                className="btn-ghost w-full bg-gradient-to-r from-sky-500/25 to-violet-600/25 text-sm ring-sky-300/40 sm:text-base"
+              >
+                {t('menu.multiplayer')}
+              </button>
             </div>
 
             <div className="mt-5 flex flex-wrap justify-center gap-4 text-xs text-white/60 sm:mt-6 sm:gap-6 sm:text-sm short:mt-3">

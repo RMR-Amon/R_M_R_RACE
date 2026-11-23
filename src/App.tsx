@@ -1,17 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import MainMenu from './components/MainMenu';
 import Garage from './components/Garage';
 import Setup, { type RaceSetup } from './components/Setup';
 import Story from './components/Story';
 import RaceScreen from './components/RaceScreen';
 import Results from './components/Results';
+import MultiplayerMenu from './components/multiplayer/MultiplayerMenu';
+import Lobby from './components/multiplayer/Lobby';
 import { useSave, type SaveData } from './store/save';
 import { audio } from './game/audio';
 import { BOSSES, STORY, bossName, type StoryLevel } from './data/story';
-import { getMap } from './data/maps';
+import { getMap, mapName } from './data/maps';
+import { getCar } from './data/cars';
+import { net, savedSession, useNet, type ResultsView } from './net/session';
+import type { MatchInfo } from './net/protocol';
 import type { RaceConfig, RaceResult } from './game/types';
 
-type Screen = 'menu' | 'garage' | 'setup' | 'story' | 'race' | 'results';
+type Screen = 'menu' | 'garage' | 'setup' | 'story' | 'race' | 'results' | 'mp' | 'lobby';
 
 /** completes a race setup with the player's car, paint, driver and settings */
 function buildConfig(save: SaveData, setup: RaceSetup, extra: Partial<RaceConfig> = {}): RaceConfig {
@@ -45,6 +50,49 @@ function storyConfig(save: SaveData, level: StoryLevel): RaceConfig {
   );
 }
 
+/** LAN match → engine config (the roster carries every player's car, paint and driver) */
+function netConfig(save: SaveData, m: MatchInfo, you: number): RaceConfig {
+  const me = m.roster.find((r) => r.id === you) ?? m.roster[0];
+  return {
+    mapId: m.mapId,
+    theme: m.theme,
+    mode: m.mode === 'battle' ? { kind: 'battle', duration: m.duration } : { kind: 'race', laps: m.laps },
+    carId: me.carId,
+    paint: me.paint ?? undefined,
+    driver: me.look,
+    difficulty: 'medium',
+    opponents: 0,
+    items: m.items,
+    intro: false,
+    quality: save.quality,
+    net: net.link ?? undefined,
+  };
+}
+
+/** host results → the results screen's format */
+function netResult(r: ResultsView, you: number): RaceResult {
+  const rows = r.rows.map((x) => ({
+    name: x.name,
+    isPlayer: x.id === you,
+    color: x.color,
+    carName: getCar(x.carId).name,
+    place: x.place,
+    time: x.time,
+    points: x.points,
+    hits: x.hits,
+    coins: x.coins,
+  }));
+  const mine = rows.find((x) => x.isPlayer);
+  return {
+    mode: r.mode === 'battle' ? { kind: 'battle', duration: 0 } : { kind: 'race', laps: r.laps },
+    mapName: mapName(getMap(r.mapId)),
+    rows,
+    playerCoins: mine?.coins ?? 0,
+    playerPlace: mine?.place ?? rows.length,
+    mistakes: 0,
+  };
+}
+
 export default function App() {
   const [save, update] = useSave();
   const [screen, setScreen] = useState<Screen>('menu');
@@ -52,10 +100,17 @@ export default function App() {
   const [result, setResult] = useState<RaceResult | null>(null);
   const [passed, setPassed] = useState<boolean | null>(null);
   const [raceKey, setRaceKey] = useState(0);
+  const netView = useNet();
+  const online = !!config?.net;
 
   useEffect(() => {
     audio.setMuted(save.muted);
   }, [save.muted]);
+
+  // reloaded the page in the middle of a LAN session: rejoin the room automatically
+  useEffect(() => {
+    if (savedSession() && net.resumeSaved()) setScreen('lobby');
+  }, []);
 
   const startRace = (cfg: RaceConfig) => {
     audio.init();
@@ -87,7 +142,38 @@ export default function App() {
     setScreen('results');
   };
 
-  const nextLevel = result?.storyLevel && passed && result.storyLevel < 100 ? STORY[result.storyLevel] : null;
+  // ---------------------------------------------------------------- LAN session drives the screens
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  const seenRace = useRef(0);
+  useEffect(() => {
+    if (netView.phase === 'race' && netView.match && net.link && netView.raceKey !== seenRace.current) {
+      seenRace.current = netView.raceKey;
+      startRace(netConfig(saveRef.current, netView.match, netView.you));
+    }
+  }, [netView.phase, netView.raceKey, netView.match, netView.you]);
+
+  const seenResults = useRef<ResultsView | null>(null);
+  useEffect(() => {
+    if (netView.phase === 'results' && netView.results && netView.results !== seenResults.current) {
+      seenResults.current = netView.results;
+      finishRace(netResult(netView.results, netView.you));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [netView.phase, netView.results]);
+
+  useEffect(() => {
+    // the session ended (kicked, room closed, host lost) while racing / on results: show it in the lobby screen
+    if (netView.phase === 'ended' && (screen === 'race' || screen === 'results')) setScreen('lobby');
+    // a match that failed to start: back to the lobby
+    if (netView.phase === 'lobby' && screen === 'race' && online) setScreen('lobby');
+  }, [netView.phase, screen, online]);
+
+  const leaveOnline = () => {
+    net.leave();
+    setConfig(null);
+    setScreen('mp');
+  };
 
   return (
     <div className="h-full w-full overflow-hidden">
@@ -98,6 +184,7 @@ export default function App() {
           onPlay={() => setScreen('setup')}
           onStory={() => setScreen('story')}
           onGarage={() => setScreen('garage')}
+          onMultiplayer={() => setScreen('mp')}
           onToggleSound={() => update((s) => ({ ...s, muted: !s.muted }))}
         />
       )}
@@ -112,6 +199,8 @@ export default function App() {
           onStart={(setup) => startRace(buildConfig(save, setup))}
         />
       )}
+      {screen === 'mp' && <MultiplayerMenu save={save} update={update} onBack={() => setScreen('menu')} onLobby={() => setScreen('lobby')} />}
+      {screen === 'lobby' && <Lobby save={save} update={update} onExit={() => setScreen('mp')} />}
       {screen === 'race' && config && (
         <RaceScreen
           key={raceKey}
@@ -121,7 +210,7 @@ export default function App() {
           mirrors={save.mirrors}
           onToggleMirrors={() => update((s) => ({ ...s, mirrors: !s.mirrors }))}
           onFinish={finishRace}
-          onExit={() => setScreen(config.storyLevel ? 'story' : 'menu')}
+          onExit={online ? leaveOnline : () => setScreen(config.storyLevel ? 'story' : 'menu')}
           onRestart={() => setRaceKey((k) => k + 1)}
         />
       )}
@@ -130,13 +219,26 @@ export default function App() {
           result={result}
           totalCoins={save.coins}
           passed={passed}
-          onAgain={() => startRace({ ...config, intro: false })}
-          onNext={nextLevel ? () => startRace(storyConfig(save, nextLevel)) : null}
+          online={online}
+          onAgain={
+            online
+              ? () => {
+                  net.backToLobby();
+                  setScreen('lobby');
+                }
+              : () => startRace({ ...config, intro: false })
+          }
+          onNext={nextLevelFor(result, passed, save)}
           onStory={config.storyLevel ? () => setScreen('story') : null}
-          onMenu={() => setScreen('menu')}
+          onMenu={online ? leaveOnline : () => setScreen('menu')}
           onGarage={() => setScreen('garage')}
         />
       )}
     </div>
   );
+
+  function nextLevelFor(r: RaceResult, ok: boolean | null, s: SaveData) {
+    const next = r.storyLevel && ok && r.storyLevel < 100 ? STORY[r.storyLevel] : null;
+    return next ? () => startRace(storyConfig(s, next)) : null;
+  }
 }
