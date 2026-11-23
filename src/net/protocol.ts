@@ -88,8 +88,10 @@ export interface DiscoveredRoom extends RoomListing {
 /** the host server a browser is talking to */
 export interface HostInfo {
   sid: string;
-  /** LAN addresses of the machine (shown so phones / other PCs know what to open) */
+  /** LAN addresses of the machine, best (real Wi-Fi / Ethernet) first */
   addresses: string[];
+  /** the same with interface names, so the player can pick the right one */
+  interfaces: { name: string; address: string }[];
   port: number;
   /** false when the UDP discovery port could not be opened */
   discovery: boolean;

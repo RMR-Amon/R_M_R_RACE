@@ -29,6 +29,14 @@ export class RaceLink {
   private shot = 0;
   private loadedSent = false;
   disposed = false;
+  // ---- monitoring: packets per second in both directions (1 s windows)
+  private rxCount = 0;
+  private txCount = 0;
+  private winStart = performance.now();
+  /** snapshots received per second (≈ host network tick while cars move) */
+  rxHz = 0;
+  /** own car states sent per second */
+  txHz = 0;
 
   constructor(
     readonly info: MatchInfo,
@@ -63,6 +71,7 @@ export class RaceLink {
   // ------------------------------------------------------------------ incoming (called by the session)
 
   onSnapshot(view: DataView) {
+    this.rxCount++;
     decodeSnapshot(view, this.scratch, (id, s) => this.remotes.get(id)?.push(s));
   }
 
@@ -102,9 +111,21 @@ export class RaceLink {
   /** the engine calls this every frame; packets leave at most at CLIENT_SEND_HZ */
   pushLocal(s: CarState): boolean {
     const buf = this.sender.next(s, performance.now());
+    this.tickStats();
     if (!buf) return false;
     this.conn.sendBinary(buf);
+    this.txCount++;
     return true;
+  }
+
+  private tickStats() {
+    const now = performance.now();
+    const span = now - this.winStart;
+    if (span < 1000) return;
+    this.rxHz = Math.round((this.rxCount * 1000) / span);
+    this.txHz = Math.round((this.txCount * 1000) / span);
+    this.rxCount = this.txCount = 0;
+    this.winStart = now;
   }
 
   nextShot() {

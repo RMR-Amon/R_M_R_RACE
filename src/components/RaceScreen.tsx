@@ -119,7 +119,7 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
 
         <div className="flex flex-col items-end gap-2">
           <div className="pointer-events-auto flex gap-2">
-            {netHud && <NetChip rtt={netHud.rtt} conn={netHud.conn} />}
+            {netHud && <NetChip rtt={netHud.rtt} conn={netHud.conn} rx={netHud.rxHz} tx={netHud.txHz} />}
             <button
               onClick={onToggleMirrors}
               title={t('hud.mirrors')}
@@ -271,12 +271,13 @@ const MirrorFrame = forwardRef<HTMLDivElement, { className: string; label?: stri
   );
 });
 
-function NetChip({ rtt, conn }: { rtt: number; conn: string }) {
+function NetChip({ rtt, conn, rx, tx }: { rtt: number; conn: string; rx: number; tx: number }) {
   const bad = conn !== 'open';
   const tone = bad ? 'bg-amber-500/60 ring-amber-200/70' : rtt < 0 || rtt > 150 ? 'bg-rose-500/45 ring-rose-300/50' : rtt > 60 ? 'bg-amber-400/40 ring-amber-200/50' : 'bg-emerald-500/35 ring-emerald-300/50';
   return (
     <span className={`hud-btn grid w-auto place-items-center rounded-xl px-2 font-mono text-[10px] font-bold ring-1 backdrop-blur sm:text-xs ${tone}`} style={{ width: 'auto' }}>
       {bad ? '📡' : `${Math.max(0, rtt)}ms`}
+      {!bad && <span className="hidden font-normal opacity-80 sm:inline">↓{rx}/s ↑{tx}/s</span>}
     </span>
   );
 }

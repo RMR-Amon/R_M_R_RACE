@@ -3,7 +3,8 @@ import { ScreenShell, TopBar } from '../ui';
 import { DEFAULT_SETTINGS, ErrorModal, RoomSettingsForm, matchLabel, playerName, profileFromSave } from './common';
 import { THEMES, getMap } from '../../data/maps';
 import { GAME_VERSION, NET } from '../../net/config';
-import { createUrl, probeHost, roomUrl, rooms, useRooms } from '../../net/lanService';
+import { createUrl, lanMode, probeHost, roomUrl, rooms, useRooms } from '../../net/lanService';
+import { DESKTOP_DOWNLOAD_URL, desktopApi, useDesktopLan } from '../../net/desktop';
 import { net, savedSession, useNet } from '../../net/session';
 import { t, useLang } from '../../i18n';
 import type { DiscoveredRoom } from '../../net/protocol';
@@ -22,6 +23,16 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
   const [tab, setTab] = useState<'find' | 'create'>('find');
   const view = useNet();
   const [canRejoin, setCanRejoin] = useState(() => !!savedSession());
+  const mode = lanMode();
+
+  if (mode === 'unsupported') {
+    return (
+      <ScreenShell>
+        <TopBar title={t('mp.title')} onBack={onBack} />
+        <DesktopRequired />
+      </ScreenShell>
+    );
+  }
 
   const join = (room: DiscoveredRoom, code?: string) => {
     net.join(roomUrl(room), room.roomId, profileFromSave(save), code);
@@ -69,6 +80,8 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
           />
         </section>
 
+        {mode === 'desktop' && <LanServerPanel />}
+
         <div className="grid grid-cols-2 gap-3">
           {(
             [
@@ -95,6 +108,78 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
 
       {view.phase === 'ended' && view.fatal && <ErrorModal code={view.fatal.code} detail={view.fatal.detail} onClose={() => net.dismiss()} />}
     </ScreenShell>
+  );
+}
+
+/** web version (HTTPS, e.g. Netlify): a browser page cannot host or discover LAN games */
+function DesktopRequired() {
+  return (
+    <div className="mx-auto max-w-3xl space-y-5 px-4 pb-16 sm:px-8">
+      <section className="panel animate-slideUp space-y-4 p-6 text-center sm:p-10">
+        <div className="text-6xl">🖥️</div>
+        <h2 className="font-display text-3xl uppercase">{t('mp.desktopRequired')}</h2>
+        <p className="mx-auto max-w-xl text-white/75">{t('mp.desktopRequiredText')}</p>
+        <a href={DESKTOP_DOWNLOAD_URL} target="_blank" rel="noreferrer" className="btn-primary inline-flex text-lg">
+          ⬇ {t('mp.download')}
+        </a>
+        <p className="text-xs text-white/50">{t('mp.downloadHint')}</p>
+      </section>
+      <section className="panel space-y-2 p-5 text-sm text-white/70">
+        <div className="font-display text-base text-white">{t('mp.whyDesktop')}</div>
+        <p>• {t('mp.why1')}</p>
+        <p>• {t('mp.why2')}</p>
+        <p>• {t('mp.why3')}</p>
+      </section>
+    </div>
+  );
+}
+
+/** desktop: the LAN server of this computer — status, address for the others, start / stop */
+function LanServerPanel() {
+  const info = useDesktopLan();
+  const [busy, setBusy] = useState(false);
+  const api = desktopApi();
+  const toggle = async () => {
+    if (!api || !info) return;
+    setBusy(true);
+    try {
+      if (info.running) {
+        net.leave();
+        await api.stopLan();
+      } else await api.startLan();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="panel flex flex-wrap items-center gap-3 p-4 sm:p-5">
+      <span className={`h-3 w-3 shrink-0 rounded-full ${info?.running ? 'animate-pulse bg-emerald-400' : 'bg-rose-400'}`} />
+      <div className="min-w-0 flex-1">
+        <div className="font-display text-base">
+          {t('mp.server.title')}: {info?.running ? t('mp.server.running') : t('mp.server.stopped')}
+        </div>
+        {info?.running ? (
+          <div className="text-xs text-white/60">
+            {info.primary ? (
+              <>
+                {t('mp.server.address')} <code className="rounded bg-white/10 px-1.5 py-0.5 text-white/85">{info.primary}:{info.port}</code>
+              </>
+            ) : (
+              t('mp.server.noNetwork')
+            )}
+            {!info.discovery && <span className="ml-2 text-amber-200">· {t('mp.discoveryOff')}</span>}
+            {info.interfaces.length > 1 && (
+              <span className="ml-2 text-white/40">({info.interfaces.map((i) => `${i.name}: ${i.address}`).join(' · ')})</span>
+            )}
+          </div>
+        ) : (
+          info?.error && <div className="text-xs text-rose-300">{t('mp.server.error', { e: info.error })}</div>
+        )}
+      </div>
+      <button onClick={() => void toggle()} disabled={busy || !info} className={info?.running ? 'btn-ghost !py-2 text-sm' : 'btn-primary !py-2 text-sm'}>
+        {info?.running ? t('mp.server.stop') : t('mp.server.start')}
+      </button>
+    </section>
   );
 }
 
@@ -157,10 +242,10 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
         </button>
       </div>
 
-      {w.state === 'offline' && (
+      {(w.state === 'offline' || w.state === 'stopped') && (
         <div className="animate-slideUp rounded-3xl bg-rose-500/10 p-5 ring-1 ring-rose-400/40">
           <div className="font-display text-xl">⚠️ {t('mp.serviceOffline')}</div>
-          <p className="mt-1 text-sm text-white/75">{t('mp.serviceOfflineHint')}</p>
+          <p className="mt-1 text-sm text-white/75">{lanMode() === 'desktop' ? t('mp.serviceOfflineDesktop') : t('mp.serviceOfflineHint')}</p>
         </div>
       )}
       {w.state === 'online' && w.self && !w.self.discovery && (
@@ -174,7 +259,7 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
           ))}
         </div>
       ) : (
-        w.state !== 'offline' && (
+        w.state === 'online' && (
           <div className="panel animate-slideUp p-6 text-center sm:p-10">
             <div className="relative mx-auto mb-3 grid h-20 w-20 place-items-center">
               <span className="absolute inset-0 animate-ping rounded-full bg-sky-400/20" />
@@ -182,6 +267,7 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
               <span className="relative text-4xl">📡</span>
             </div>
             <div className="font-display text-2xl">{t('mp.noRooms')}</div>
+            <div className="mt-1 text-xs font-bold uppercase tracking-widest text-sky-300">{t('mp.discoveryActive')}</div>
             <p className="mx-auto mt-1 max-w-md text-sm text-white/60">{t('mp.noRoomsHint')}</p>
             <ul className="mx-auto mt-4 max-w-lg space-y-1.5 text-left text-xs text-white/55 sm:text-sm">
               <li>📶 {t('mp.tip1')}</li>
@@ -236,7 +322,11 @@ function RoomCard({ room, index, onJoin }: { room: DiscoveredRoom; index: number
   const full = room.players >= room.max;
   const busy = room.status !== 'lobby';
   const th = THEMES[room.mode === 'battle' ? room.theme : getMap(room.mapId).theme];
-  const disabled = full || busy || !room.compatible;
+  const w = useRooms();
+  void w; // re-render when reachability checks arrive
+  const check = rooms.check(room);
+  const unreachable = !!check && !check.ok;
+  const disabled = full || busy || !room.compatible || unreachable;
   return (
     <div
       style={{ animationDelay: `${Math.min(index, 8) * 60}ms` }}
@@ -262,7 +352,13 @@ function RoomCard({ room, index, onJoin }: { room: DiscoveredRoom; index: number
             v{room.version}
             {!room.compatible && ` · ${t('mp.incompatible', { v: GAME_VERSION })}`}
           </span>
-          {room.address && <span className="rounded-full bg-white/5 px-2 py-0.5 font-mono font-normal text-white/45">{room.address}</span>}
+          <span
+            className={`rounded-full px-2 py-0.5 ${!check ? 'bg-white/10 text-white/50' : check.ok ? 'bg-emerald-400/15 text-emerald-200' : 'bg-rose-500/25 text-rose-100'}`}
+            title={room.address ? `${room.address}:${room.port}` : ''}
+          >
+            {!check ? t('mp.check.wait') : check.ok ? `● ${t('mp.check.ok')} · ${check.ping} ms` : `✕ ${t('mp.check.bad')}`}
+          </span>
+          {room.address && <span className="rounded-full bg-white/5 px-2 py-0.5 font-mono font-normal text-white/45">{room.address}:{room.port}</span>}
         </div>
       </div>
       <div className="grid place-items-center pr-3 sm:pr-4">
@@ -333,8 +429,12 @@ function CreateRoom({ save, onCreated }: { save: SaveData; onCreated: () => void
           setSettings(s);
         }}
       />
-      {w.state === 'offline' && <p className="rounded-2xl bg-rose-500/10 px-4 py-2 text-sm text-rose-200 ring-1 ring-rose-400/30">{t('mp.serviceOfflineHint')}</p>}
-      <button onClick={create} disabled={w.state === 'offline'} className="btn-primary w-full text-lg">
+      {w.state !== 'online' && (
+        <p className="rounded-2xl bg-rose-500/10 px-4 py-2 text-sm text-rose-200 ring-1 ring-rose-400/30">
+          {lanMode() === 'desktop' ? t('mp.serviceOfflineDesktop') : t('mp.serviceOfflineHint')}
+        </p>
+      )}
+      <button onClick={create} disabled={w.state !== 'online'} className="btn-primary w-full text-lg">
         {t('mp.createBtn')}
       </button>
     </section>

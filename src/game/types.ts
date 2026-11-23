@@ -134,7 +134,7 @@ export interface HudState {
   message: string;
   messageId: number;
   /** LAN multiplayer status (null in single player) */
-  net: { waiting: boolean; rtt: number; conn: 'connecting' | 'open' | 'reconnecting' | 'closed' } | null;
+  net: { waiting: boolean; rtt: number; conn: 'connecting' | 'open' | 'reconnecting' | 'closed'; rxHz: number; txHz: number } | null;
 }
 
 export interface ResultRow {

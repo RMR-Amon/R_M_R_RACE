@@ -2802,7 +2802,7 @@ export class Game {
       standings,
       message: this.message,
       messageId: this.messageId,
-      net: this.net ? { waiting: this.net.goAt === null, rtt: this.net.rtt, conn: this.net.connState } : null,
+      net: this.net ? { waiting: this.net.goAt === null, rtt: this.net.rtt, conn: this.net.connState, rxHz: this.net.rxHz, txHz: this.net.txHz } : null,
     });
   }
 

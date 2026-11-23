@@ -1,155 +1,170 @@
-# RMR_race — LAN Multiplayer
+# RMR_race — LAN-мультиплеер (Desktop-версия)
 
-2–8 players on one local network (same Wi-Fi router or the same phone hotspot), without the internet and without any external server.
+2–8 игроков в одной локальной сети (один Wi-Fi роутер или одна точка доступа), без интернета и без внешних серверов.
 
-## Quick start
+- **Веб-версия** (https://r-m-r-race.netlify.app/) работает как раньше: одиночная игра, сюжет, гараж. В меню «Мультиплеер» она честно сообщает **Desktop LAN Mode Required** и даёт ссылку на скачивание.
+- **Desktop-версия** (Windows `.exe`, Electron) — та же игра плюс настоящий LAN-мультиплеер.
 
-On the **host** computer (the one that creates the room):
+## Почему не работало «LAN Server not connected»
+
+1. Netlify отдаёт игру по **HTTPS** с домена `r-m-r-race.netlify.app`. Клиентский код искал LAN-сервис по адресу **самой страницы** — `wss://r-m-r-race.netlify.app:47800`. Такого сервера нет и быть не может, поэтому список комнат всегда показывал «LAN service is not running», а кнопка создания комнаты была выключена.
+2. Даже если запустить сервер на своём ПК, HTTPS-страница не имеет права открыть незащищённый `ws://192.168.x.x` (браузер блокирует mixed content).
+3. Браузер в принципе не умеет UDP (поиск комнат) и не может запустить сервер.
+
+Итог: из браузерной страницы на Netlify LAN-мультиплеер физически невозможен — нужен локальный процесс с Node.js. Отсюда Desktop-версия.
+
+## Архитектура
+
+```
+RMR_race.exe (Electron)
+ ├─ Main Process (Node.js)                     electron/main.ts
+ │   ├─ LAN Host Server                        server/index.ts  (HTTP + WebSocket на 0.0.0.0:47800)
+ │   │   ├─ LAN Discovery (UDP 47801)          server/discovery.ts
+ │   │   ├─ Room Manager / Lobby Manager       server/roomManager.ts, server/room.ts
+ │   │   └─ Match Manager (авторитетный)       server/match.ts
+ │   ├─ LanController (старт/стоп, сеть)       electron/lan.ts
+ │   └─ app:// — отдаёт ту же сборку dist/, что и Netlify
+ ├─ Preload (contextBridge, sandbox)           electron/preload.ts → window.rmrDesktop
+ └─ Renderer: существующая игра RMR_race       src/ (React + Three.js, без изменений механик)
+     └─ Multiplayer Client                     src/net/*
+```
+
+- **Игровой интерфейс загружается не с LAN-сервера**, а по собственной схеме `app://rmr/`. Поэтому сервер можно останавливать и запускать из игры (кнопка «Остановить / Запустить» в меню «Мультиплеер»), а страница от этого не падает.
+- **Безопасность Electron:** `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`; странице доступен только маленький API `window.rmrDesktop` (информация о LAN-сервере, старт/стоп, внешние https-ссылки). Каждый IPC-запрос проверяет, что он пришёл со страницы `app://rmr/`. Навигация заблокирована, внешние ссылки открываются только `https://` и только в системном браузере, задан CSP, разрешения (камера, микрофон и т.п.) запрещены.
+- **Выход из приложения:** все комнаты закрываются с уведомлением игроков («сервер хоста выключен»), сокеты закрываются.
+- **Один экземпляр на компьютер** (иначе две копии спорили бы за порты). Если порт 47800 занят, сервер берёт 47802…47810 и объявляет его в UDP.
+
+### Адрес хоста
+
+Сервер слушает `0.0.0.0`, а адрес для других компьютеров выбирается по рейтингу интерфейсов: Wi-Fi/Ethernet выше, виртуальные адаптеры (VirtualBox, Hyper-V `vEthernet`, VMware, WSL, VPN) ниже, 169.254.x.x (нет DHCP) — в конце. Его показывает панель «LAN-сервер». Для подключения других компьютеров **никогда не используется** `localhost`/`127.0.0.1`: адрес комнаты в списке — это реальный IPv4, с которого пришёл UDP-анонс. Смена сети (переподключение Wi-Fi) отслеживается каждые 5 с.
+
+### Обнаружение комнат (UDP 47801)
+
+- Хост с комнатами рассылает анонс раз в секунду (heartbeat) на `255.255.255.255` и на broadcast-адрес каждого интерфейса.
+- «Обновить» отправляет запрос — хосты отвечают сразу.
+- Комната удаляется из списка через 3,5 с без анонса (timeout/expiration); закрытая комната исчезает сразу; дубликаты отсекаются по паре (ID сервера, ID комнаты).
+- Пакеты чужих игр/версий игнорируются (game id `RMR_race`, protocol version); пакеты не из частных сетей отбрасываются.
+- **Проверка доступности:** для каждого хоста из списка клиент раз в 3 с делает HTTP-запрос `http://ip:port/api/info` — это пинг и проверка, что TCP не закрыт брандмауэром. Недоступный хост помечается «недоступен (брандмауэр?)», кнопка JOIN выключается.
+- Broadcast не проходит через роутеры, поэтому разные сети друг друга не видят.
+- **Ручное подключение:** «Подключиться по IP» (`192.168.x.x` или `192.168.x.x:порт`).
+
+### Синхронизация гонки (Host-Authoritative)
+
+- Каждый клиент считает **свою** машину существующей физикой (мгновенное управление = client-side prediction) и шлёт состояние **20 раз/с бинарным пакетом 35 байт** (позиция, скорости, курс, руль, газ/тормоз, дрифт, нитро, щит, заморозка, полёт, падение, занос, флаг телепорта). Расписание с коррекцией дрейфа держит 20 Гц и при 30–50 fps.
+- **Хост проверяет каждый пакет** по той же трассе и тем же машинам, что в игре: предел скорости машины, перемещение за шаг времени, выезд с трассы, бюджет времени клиента (против speedhack), дубликаты и старые пакеты. Отклонённый пакет → `correct` → машина возвращается на последнюю принятую позицию (server reconciliation).
+- **Только хост** считает прогресс, чекпоинты (8 на круг), круги, места, финиш, очки, монеты и результаты.
+- Хост рассылает **снимки 20 Гц только с изменившимися машинами** (delta); стоящая машина — 1 ключевой кадр в секунду.
+- Чужие машины рисуются с задержкой 110 мс и **интерполируются** между снимками (экстраполяция ≤ 250 мс при задержках). Столкновения: каждый клиент двигает только свою машину.
+- Общий отсчёт и таймер — по часам хоста (синхронизация по пингу, выбирается замер с минимальной задержкой).
+- Предметы: использование разрешается хостом только после реального проезда через ряд лаки-блоков; попадание сообщает жертва, хост проверяет выстрел и засчитывает его один раз.
+- **Мониторинг в гонке:** пинг, входящие снимки/с (сетевой тик), исходящие пакеты/с, состояние соединения. Потерю пакетов не измеряем: WebSocket работает поверх TCP, который сам переотправляет потерянное — честной цифры «потерь» там нет, вместо неё видны задержки и частота.
+
+### Отключения
+
+| Ситуация | Поведение |
+|---|---|
+| Игрок закрыл приложение | Сокет закрывается, слот держится 15 с, затем игрок удаляется у всех |
+| Пропал Wi-Fi / завис клиент | Heartbeat: тишина > 6 с → «потерял связь…» у всех, 📡 в таблице |
+| Кратковременный обрыв | Автопереподключение с токеном сессии, гонка продолжается с того же места |
+| Перезапуск страницы | Токен в sessionStorage → автоматический возврат в комнату/гонку |
+| Хост вышел из лобби | Роль хоста переходит игроку, который дольше всех в комнате |
+| Хост остановил сервер / закрыл приложение | Все получают «Сервер хоста выключен» и возвращаются в меню |
+| Хост пропал из сети | Переподключение 15 с, затем «Связь с хостом потеряна» — без бесконечного ожидания |
+| Сервер перестал отвечать | То же: heartbeat 6 с + 15 с на переподключение |
+
+## Запуск
+
+### Игрокам (готовая сборка)
+
+1. Скачать `RMR_race-Setup-1.1.0.exe` (установщик) или `RMR_race-Portable-1.1.0.exe` (без установки).
+2. Установщик сам добавляет правило **Брандмауэра Windows** для RMR_race (частные сети). Portable-версию Windows спросит при первом запуске — нажать **«Разрешить» для частных сетей**.
+3. Сеть Wi-Fi в Windows должна быть **«Частная»** (Параметры → Сеть и Интернет → свойства Wi-Fi → Частная). В «Общедоступной» сети Windows блокирует входящие подключения.
+
+### Создать комнату (Host)
+
+Главное меню → **🌐 Мультиплеер (LAN)** → вверху панель «LAN-сервер: работает, другие подключаются к 192.168.x.x:47800» → **Создать комнату** → название, имя, игроков (2–8), режим, карта, круги, лаки-блоки, открытая/закрытая → **Создать комнату 🚀**. Комната сразу появляется у всех в сети. Хост видит игроков, пинг и готовность, может менять настройки и исключать; **Старт** доступен, когда все готовы и связь стабильна. **Закрыть комнату** или **Остановить** сервер — все получат уведомление.
+
+### Подключиться (другие компьютеры)
+
+Мультиплеер → **Найти комнаты** → комната появится сама (название, хост, игроки 3/8, карта, режим, пинг, статус) → **Войти** → **Я готов**. Если не появилась — **Обновить**, затем **Подключиться по IP** (адрес из панели хоста).
+
+Телефоны/планшеты без приложения тоже могут играть: открыть в браузере `http://<IP-хоста>:47800` (адрес показан в панели хоста).
+
+### Разработчикам
 
 ```bash
-npm install          # once
-npm start            # builds the game and starts the LAN host server
+npm install
+npm run desktop        # сборка игры + запуск Desktop-версии
+npm run dist:win       # сборка release/RMR_race-Setup-1.1.0.exe и RMR_race-Portable-1.1.0.exe
+npm run dist:mac       # на macOS: .dmg
+npm run dist:linux     # на Linux: AppImage
+npm run desktop:e2e    # реальная гонка двух окон игры через LAN-сервер (20 проверок)
+npm run test:lan       # сетевые тесты сервера (69 проверок)
+npm run server         # LAN-сервер без Electron (для отладки / телефонов)
+npm run typecheck
 ```
 
-The console prints the addresses:
+Особенности окружения, встреченные при сборке:
+- **npm 11 не выполняет postinstall-скрипт Electron** (`allowScripts`) → бинарник не скачивается. Решение: `npm install-scripts approve electron` и `npm rebuild electron`, либо вручную распаковать `electron-v33.2.1-win32-x64.zip` из `%LOCALAPPDATA%\electron\Cache` в `node_modules/electron/dist` и записать `electron.exe` в `node_modules/electron/path.txt`.
+- **Терминал VS Code** задаёт `ELECTRON_RUN_AS_NODE=1` — Electron запускается как обычный Node. Скрипты используют `electron/launch.mjs`, который убирает эту переменную.
+- **electron-builder на Windows без прав администратора** не может распаковать winCodeSign (там symlink-и для macOS). Решение: включить «Режим разработчика» Windows или один раз распаковать архив `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\*.7z` в папку `winCodeSign-2.6.0` рядом (7-Zip пропустит 2 ссылки macOS — для Windows они не нужны).
 
-```
-On this computer:   http://localhost:47800
-Other devices (Wi-Fi): http://192.168.1.20:47800
-```
+## Публикация обновлений
 
-1. The host opens `http://localhost:47800` → **🌐 Multiplayer (LAN)** → **Create room**.
-2. Other players on the same network:
-   - **PC with the project:** run `npm start` and open `http://localhost:47800` → Multiplayer → **Find rooms**. The room appears automatically.
-   - **Phone / tablet / PC without the project:** open the host's address in a browser (`http://192.168.1.20:47800`) → Multiplayer → Find rooms.
-3. Players press **I'm ready**, and the host presses **Start**.
+**Веб-версия (Netlify)** — без изменений в процессе: push в `master` на GitHub → Netlify выполняет `npm run build` и публикует `dist/` (задано в `netlify.toml`; там же `ELECTRON_SKIP_BINARY_DOWNLOAD=1`, чтобы Netlify не скачивал Electron). Сборка проверена: `npm run build` проходит.
 
-Ports: **TCP 47800** (game + WebSocket) and **UDP 47801** (room discovery). Change the TCP port with the `RMR_PORT` environment variable and the UDP port with `RMR_UDP`.
+**Desktop-версия (GitHub Releases):**
+1. Поднять `version` в `package.json` и `GAME_VERSION` в `src/net/config.ts` (одинаково — игроки с разными версиями не могут играть вместе).
+2. `npm run dist:win`.
+3. GitHub → Releases → *Draft a new release* → тег `v1.1.0` → приложить `release/RMR_race-Setup-1.1.0.exe` и `release/RMR_race-Portable-1.1.0.exe` → Publish.
+4. Кнопка «Скачать Desktop-версию» в веб-версии ведёт на `https://github.com/RMR-Amon/R_M_R_RACE/releases/latest`.
 
-> **Windows:** on the first run Windows Firewall asks for permission for Node.js. Allow it for **private networks**. Otherwise other devices will not see the room.
+Папки `release/`, `dist-electron/`, `dist/` в git не попадают (`.gitignore`).
 
-## Why this architecture
+## Тестирование
 
-The game runs in the browser (React + Three.js + Vite). Browsers **cannot** open UDP sockets or run a server, so a fully in-browser LAN game is impossible. The solution is a small Node.js host server (`server/`) that:
+### Tested (реально выполнено на одном компьютере, Windows 11)
 
-| Role | How |
+| Что | Результат |
 |---|---|
-| LAN discovery | UDP broadcast every second (heartbeat) to `255.255.255.255` and to the directed broadcast address of each interface; a timeout of 3.5 s removes dead rooms |
-| Serving the game to phones | HTTP serves `dist/`, so devices without Node just open the address |
-| Lobby and match | WebSocket (`ws`), `/play` path |
-| Room list for the browser | WebSocket `/agent` (the browser cannot listen to UDP itself) |
-| Validation | Uses **the same** `Track`, cars and grid from `src/` (run via `tsx`) |
+| Сетевые тесты сервера `npm run test:lan` | **69/69**: UDP-обнаружение между двумя хостами, несколько комнат, timeout исчезнувшего хоста (3,5 с), 8 игроков в комнате и отказ 9-му, закрытая комната с кодом, готовность/старт/кик/выход/передача хоста, гонка 8 игроков с правильным порядком финиша, отклонение телепорта и сверхскорости, предметы и попадания, обрыв и переподключение в гонке, удаление через 15 с, закрытие комнаты, остановка сервера, мусорные/огромные/флуд-пакеты |
+| Нагрузка (8 игроков) | 20,0 снимков/с, ≈7 КБ/с на клиента, сервер + 8 ботов ≈5% одного ядра |
+| Desktop e2e в режиме разработки | **20/20** |
+| Desktop e2e на **собранном** `RMR_race.exe` | **20/20**: мост `rmrDesktop` есть, у страницы нет доступа к Node, сервер в main process, комната создаётся, находится в списке с пингом, вход, готовность, общий отсчёт (расхождение часов < 0,01 с), чужая машина отображается в 1,6–3,4 м от реального места (задержка интерполяции) без скачков, места от хоста, 20 пакетов/с в обе стороны, финиш и результаты у обоих, возврат в лобби, гость получает уведомление при остановке сервера хостом, сервер снова запускается из игры, ошибок в консоли нет |
+| Определение режима | Netlify (HTTPS) → «Desktop LAN Mode Required»; телефон по `http://ip:47800` → LAN доступен; Desktop → LAN доступен |
+| Сборки | `npm run build` (Netlify) ✔, `npm run typecheck` ✔, установщик и portable `.exe` собраны |
 
-Electron was not used: it would change how the game ships and starts, and it would not help phones. Node + `ws` adds one small dependency with no sub-dependencies.
+### Not Tested
 
-### Host-Authoritative
+- Установка через `RMR_race-Setup-1.1.0.exe` и добавление правила брандмауэра (требует прав администратора; проверен распакованный билд).
+- Работа без интернета на реальном роутере (код не использует интернет; шрифты Google при отсутствии интернета заменяются системными).
+- Сборки для macOS и Linux (собираются только на соответствующих ОС).
 
-- **Each client simulates its own car** (instant controls, the equivalent of client-side prediction) and sends its state at 20 Hz as a **35-byte binary packet**.
-- **The host validates every packet**: maximum speed for that car (nitro, flight and boost pads included), distance moved per time step, staying on the road or arena, a client clock time budget (against speedhack), and duplicate or old packets. A rejected packet → `correct` → the client is put back at the last accepted position (server reconciliation).
-- **Only the host decides** progress, checkpoints (8 per lap), laps, places, finish, battle points and coins. A client cannot "finish" or score points itself.
-- **Item hits**: the victim reports the hit. The host checks that the shot exists, belongs to another player, has the right type and has not been counted yet. Using an item requires a real pass through a row of lucky blocks (checked by the host on the track).
-- **Snapshots** (20 Hz) contain only the cars that changed. A standing car sends a keyframe once per second. Other players' cars are drawn with a 110 ms delay and **interpolated** between two snapshots (extrapolation of at most 250 ms if packets are lost).
-- **Countdown and race timer** are synchronised with the host clock (the sample with the lowest round trip is used), so the green light comes at the same moment for everyone.
-- The match ends **at the same moment for everyone**: when everybody has finished, 30 s after the winner, or when the battle time runs out.
+### Requires Multiple Devices (не выполнено — нужно проверить вручную)
 
-### Disconnects
-
-| Situation | Behaviour |
-|---|---|
-| Wi-Fi switched off / tab frozen | A heartbeat detects the silence within 6 s. The slot is kept for 15 s, others see 📡 "reconnecting" |
-| Brief connection drop | The client reconnects automatically with a session token; in a race it continues where it was |
-| Page reloaded | The token is in `sessionStorage`, so the room rejoins itself (including a running race) |
-| Not back within 15 s | The player is removed and their car disappears |
-| Player left the lobby | Removed immediately, everyone gets a notice |
-| Host player left | **Host migration**: the player who has been in the room longest becomes host (the room keeps living on the host server) |
-| Host closed the room / server stopped (Ctrl+C) | Everyone gets "The host closed the room" and returns to the menu |
-| Host computer disappeared from the network | The reconnect fails after 15 s and players get "Connection lost" |
-
-Moving the *server* to another computer is not possible: room state lives in the host's process, and transferring it in the middle of a race is not safe for match integrity. What migrates is the host *role* (control of the lobby).
-
-### Security
-
-Message size limit (4 KB) · rate limits (JSON 20/s, binary 45/s; a flood → disconnect) · protocol and game ID check · Player ID taken from the connection, never from the packet · increasing command numbers (replays are ignored) · sanitised names and settings · 4-digit code for private rooms with 30 s lock-out after 5 wrong attempts · 60 s ban after a kick · **only private / local IP addresses** are accepted · connection limits (96 total, 12 per IP) · path traversal protection on the static server.
-
-## Project structure
-
-```
-server/                 LAN host server (Node, run with tsx)
-  index.ts              HTTP + WebSocket + one 20 Hz loop, shutdown
-  discovery.ts          LAN Discovery (UDP broadcast, heartbeat, timeout)
-  roomManager.ts        Room Manager
-  room.ts               Lobby Manager (players, host, kick, ready, reconnect)
-  match.ts              Match Manager (validation, checkpoints, laps, results)
-  peer.ts               Connection: rate limiting, heartbeat
-  netInfo.ts            Interfaces, broadcast addresses, LAN IP filter
-  gameData.ts           Game data (Track, cars) for the server
-  static.ts             Serves dist/
-  test/lanTest.ts       Automated end-to-end tests
-src/net/                Network part of the client
-  config.ts             Network Configuration (ports, rates, timeouts)
-  protocol.ts           Network Protocol (types, binary codec, validators)
-  connection.ts         Client Connection + Connection State (heartbeat, clock sync, reconnect)
-  sync.ts               Player Synchronization (sending, interpolation)
-  raceLink.ts           Bridge between the engine and the network
-  session.ts            Session / lobby state for the UI, error handling
-  lanService.ts         Room list, connect by IP
-src/game/grid.ts        Grid positions (shared by client and server)
-src/components/multiplayer/  MultiplayerMenu, Lobby, shared components
-```
-
-Network logic is separated from game logic: the engine (`src/game/engine.ts`) talks only to `RaceLink`. In single player `cfg.net` is absent and the old code paths work as before.
-
-## Testing
-
-### Automated (one machine)
-
-```bash
-npm run test:lan
-```
-
-It starts real host servers and scripted players (real WebSocket and UDP traffic). Result of the last run: **69/69 checks**.
-
-| Area | What is checked |
-|---|---|
-| Discovery | Two hosts see each other over UDP; several rooms per host; a closed room disappears; a vanished host times out after ≈3.5 s; another protocol version is refused |
-| Lobby | 8 players; the 9th gets "room full"; start is refused while players are not ready; only the host can start; command replay is ignored; kick (and no immediate return); leave; host migration; private code; sanitised settings |
-| 8-player race | Shared green light; 20 Hz snapshots; everyone receives all 7 other cars; checkpoints; finish order matches the real driving; results for everyone; return to the lobby |
-| Anti-cheat | Teleport → correction and no progress gain; impossible speed → correction |
-| Items | Item without a pickup is not relayed; after a pickup it is; a second item from one pickup is refused; hit scored once; invented and self hits are not counted |
-| Disconnects | Drop → others are notified; reconnect with the token in the middle of a race; removal after 15 s; expired token refused; late join refused; host closes the room; server shutdown |
-| Robustness | Foreign game ID, oversized packets, no hello, flooding |
-| Browser code | `src/net` session, clock sync, interpolation without jumps, a standing car sends only keyframes |
-
-Load (8 players, 20 Hz): **≈7 KB/s download per client**. Host server CPU plus 8 scripted clients: **≈5–6% of one core**.
-
-### Manual test on several devices
-
-Preparation: everyone on the **same** Wi-Fi network; the host runs `npm start` and allows Node.js in the firewall.
-
-| # | Scenario | Expected |
+| # | Сценарий | Ожидается |
 |---|---|---|
-| 1 | Two PCs on one Wi-Fi: A creates a room, B → Find rooms | Room appears within 1–2 s, B joins, the race works |
-| 2 | 5 devices (PCs + phones via `http://<host-ip>:47800`) | Everyone is in one lobby, ping < 60 ms, everyone sees each other in the race |
-| 3 | 8 players in one room | The 9th gets "Room is full"; the race runs smoothly |
-| 4 | Two hosts each create a room | Both rooms are in the list on all devices |
-| 5 | A new player joins while the others are in the lobby | Everyone sees them immediately ("… joined") |
-| 6 | A player presses Leave in the lobby | Disappears from everyone's list |
-| 7 | A player switches Wi-Fi off during the race | Others see 📡 within ≤6 s; Wi-Fi back on within 15 s → the player continues; after 15 s → removed |
-| 8 | Host closes the room / presses Ctrl+C on the server | Everyone gets a notice and returns to the menu |
-| 9 | Reload the page during a race (F5) | The room and race rejoin automatically |
-| 10 | Devices on **different** Wi-Fi networks | Rooms are **not** visible (broadcast does not cross routers) |
-| 11 | Switch the internet off on the router (Wi-Fi stays on) | Everything works: no internet is needed |
-| 12 | 8 players on the weakest devices | Steady FPS; on phones set graphics to "Low" |
+| 1 | Два компьютера в одной Wi-Fi | Комната появляется за 1–2 с, гонка идёт |
+| 2 | Пять компьютеров | Все в одном лобби, пинг < 60 мс |
+| 3 | Восемь игроков | 9-й получает «Комната заполнена», гонка плавная |
+| 4 | Ручное подключение по IP | Комнаты хоста появляются после «Найти» |
+| 5 | Несколько хостов | Все комнаты видны всем |
+| 6 | Отключить Wi-Fi у клиента в гонке | 📡 у всех ≤ 6 с; вернуть ≤ 15 с → продолжает; иначе удаляется |
+| 7 | Выключить хост / закрыть приложение хоста | Все получают уведомление и возвращаются в меню |
+| 8 | Без интернета (интернет отключён на роутере) | Всё работает |
+| 9 | Разные Wi-Fi сети | Комнаты не видны |
+| 10 | Брандмауэр Windows, сеть «Общедоступная» | Комната не видна/недоступна → переключить сеть на «Частная» |
+| 11 | Слабые ПК, 8 игроков | Стабильный FPS (графика «Низкая») |
 
-**If rooms are not visible:** check that both devices are on the same network (not a guest network); that "AP / client isolation" is off in the router; that Node.js is allowed through the firewall (TCP 47800, UDP 47801); then try **Connect by IP** with the host address. If connecting by IP fails too, the network blocks traffic between devices.
+**Если комнаты не видны:** одна и та же сеть (не гостевая); в роутере выключена «изоляция клиентов (AP isolation)»; сеть Windows «Частная»; RMR_race разрешён в брандмауэре (TCP 47800, UDP 47801); попробовать «Подключиться по IP». Если и по IP не подключается — сеть блокирует трафик между устройствами.
 
-## Known limitations
+## Известные ограничения
 
-- **The Node server is needed on the host.** A plain web page cannot host a LAN game (browser restriction). Phones can join any room but can create a room only on the server of the PC they opened the game from.
-- **Being on the same Wi-Fi does not guarantee visibility**: guest networks, AP isolation, corporate firewalls and some mesh systems block broadcast and traffic between clients. Connect by IP works when only UDP is blocked.
-- Movement is **client-authoritative with host validation** rather than full physics on the server (the engine is tied to Three.js and the browser). Speed, teleport, off-road and time-budget cheats are blocked, but smaller deviations within physical limits are possible.
-- Item hits are decided by **the victim's** client (the host only accepts real shots). Rarely, a missile may hit a car on one screen and miss it on another.
-- Lucky blocks and barricades are not synchronised: each client shows them on its own.
-- Online races have no AI opponents and no walk-in intro, and they cannot be paused.
-- Host migration moves only the host **role**; if the host *computer* disappears, the session ends.
-- There is no HTTPS (it is a LAN game). If the page is opened over https, the browser blocks `ws://`.
+- Браузерная версия (Netlify) не может хостить и находить LAN-игры — это ограничение браузеров, а не игры. Нужна Desktop-версия (или открыть игру с хоста по `http://ip:47800`).
+- Один Wi-Fi ≠ гарантия: гостевые сети, AP isolation, корпоративные сети, некоторые mesh-системы блокируют broadcast и трафик между клиентами.
+- `.exe` не подписан цифровой подписью → Windows SmartScreen может показать предупреждение («Подробнее → Выполнить в любом случае»). Иконка приложения — стандартная Electron.
+- Движение машин — клиентская физика с проверкой хостом (а не полная физика на сервере): грубые читы блокируются, мелкие отклонения в пределах физики возможны.
+- Попадание предмета решает клиент жертвы: изредка ракета может попасть на одном экране и промахнуться на другом. Лаки-блоки и барьеры у каждого свои.
+- В онлайн-гонке нет ботов, вступительного ролика и паузы.
+- Передаётся только роль хоста; если пропал компьютер хоста, сессия заканчивается.
+- Потеря пакетов не измеряется (TCP); видны пинг и частоты пакетов.

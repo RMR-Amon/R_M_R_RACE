@@ -27,9 +27,14 @@ export class LocalSender {
   sent = 0;
 
   /** returns the encoded frame when it is time to send one, otherwise null */
+  /** schedule of the next regular send (drift-corrected, so 30–50 fps still give ~20 Hz) */
+  private nextAt = -1e9;
+
   next(s: CarState, now: number): ArrayBuffer | null {
+    if (now < this.nextAt) return null;
+    // advance by whole intervals; after a long stall start over instead of bursting
+    this.nextAt = now - this.nextAt > this.interval * 2 ? now + this.interval : this.nextAt + this.interval;
     const since = now - this.lastSent;
-    if (since < this.interval - 2) return null;
     const l = this.last;
     const changed =
       s.flags !== l.flags ||

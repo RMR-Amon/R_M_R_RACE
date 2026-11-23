@@ -1,0 +1,9 @@
+# Web version (https://r-m-r-race.netlify.app/). LAN multiplayer needs the desktop app;
+# the web build shows "Desktop LAN Mode Required" instead of pretending to connect.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Electron is only needed for the desktop app: do not download its ~100 MB binary on Netlify
+  ELECTRON_SKIP_BINARY_DOWNLOAD = "1"

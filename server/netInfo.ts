@@ -52,3 +52,28 @@ export function isLanAddress(addr: string | undefined): boolean {
 }
 
 export const plainIp = (addr: string | undefined) => (addr?.startsWith('::ffff:') ? addr.slice(7) : addr ?? '');
+
+const VIRTUAL = /vethernet|virtualbox|vbox|vmware|hyper-v|wsl|docker|loopback|bluetooth|tailscale|zerotier|hamachi|radmin|vpn|tap-|tun/i;
+const PHYSICAL = /wi-?fi|wlan|wireless|беспровод|ethernet|eth\d|en\d|подключение по локальной сети/i;
+
+/** how likely an interface is the real LAN (Wi-Fi / Ethernet) rather than a VM or VPN adapter */
+function score(i: LanInterface): number {
+  let s = 0;
+  if (VIRTUAL.test(i.name)) s -= 100;
+  if (PHYSICAL.test(i.name)) s += 20;
+  if (i.address.startsWith('192.168.')) s += 10;
+  else if (i.address.startsWith('10.')) s += 6;
+  else if (/^172\.(1[6-9]|2\d|3[01])\./.test(i.address)) s += 3;
+  if (i.address.startsWith('169.254.')) s -= 50; // no DHCP lease
+  return s;
+}
+
+/** LAN interfaces sorted best-first */
+export function rankedInterfaces(): LanInterface[] {
+  return lanInterfaces().sort((a, b) => score(b) - score(a));
+}
+
+/** the address other computers should use to reach this one (null without a network) */
+export function primaryAddress(): string | null {
+  return rankedInterfaces()[0]?.address ?? null;
+}

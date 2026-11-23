@@ -14,7 +14,6 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { GAME_ID, GAME_VERSION, NET, PROTOCOL_VERSION } from '../src/net/config';
 import {
@@ -30,7 +29,7 @@ import {
 import { CAR_IDS, DEFAULT_LOOK, RACE_MAP_IDS } from './gameData';
 import { Discovery } from './discovery';
 import { log } from './log';
-import { isLanAddress, lanInterfaces, plainIp } from './netInfo';
+import { isLanAddress, plainIp, rankedInterfaces } from './netInfo';
 import { Peer } from './peer';
 import type { Player, Room } from './room';
 import { RoomManager } from './roomManager';
@@ -57,11 +56,10 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-
 export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const port = opts.port ?? NET.HTTP_PORT;
-  const distDir = path.resolve(opts.distDir ?? path.join(here, '..', 'dist'));
+  // the desktop app passes its own folder; the CLI uses ../dist next to this file
+  const distDir = path.resolve(opts.distDir ?? path.join(process.cwd(), 'dist'));
   const sid = crypto.randomBytes(4).toString('hex');
   const manager = new RoomManager(sid, port);
   const discovery = new Discovery(sid, port, () => manager.listings(), opts.udpPort ?? NET.DISCOVERY_PORT);
@@ -70,7 +68,8 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const bindings = new WeakMap<Peer, { room: Room; player: Player }>();
   const hostInfo = (): HostInfo => ({
     sid,
-    addresses: lanInterfaces().map((i) => i.address),
+    addresses: rankedInterfaces().map((i) => i.address),
+    interfaces: rankedInterfaces().map((i) => ({ name: i.name, address: i.address })),
     port,
     discovery: !discovery.error,
     version: GAME_VERSION,
@@ -303,33 +302,4 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
       });
     });
   });
-}
-
-// ---------------------------------------------------------------------------------------------- CLI
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
-  const port = Number(process.env.RMR_PORT) || NET.HTTP_PORT;
-  startServer({ port, udpPort: Number(process.env.RMR_UDP) || NET.DISCOVERY_PORT })
-    .then((srv) => {
-      const addrs = lanInterfaces();
-      log.info(`RMR_race LAN host v${GAME_VERSION} (protocol ${PROTOCOL_VERSION}) — server id ${srv.sid}`);
-      log.info(`On this computer:   http://localhost:${port}`);
-      for (const a of addrs) log.info(`Other devices (${a.name}): http://${a.address}:${port}`);
-      if (!addrs.length) log.warn('No LAN interface found — connect to a Wi-Fi / hotspot / Ethernet network.');
-      let stopping = false;
-      const stop = () => {
-        if (stopping) return;
-        stopping = true;
-        log.info('shutting down: closing rooms…');
-        srv.close().then(() => process.exit(0));
-        setTimeout(() => process.exit(0), 1500).unref();
-      };
-      process.on('SIGINT', stop);
-      process.on('SIGTERM', stop);
-    })
-    .catch((e: NodeJS.ErrnoException) => {
-      if (e.code === 'EADDRINUSE') log.error(`Port ${port} is already in use — is the RMR_race server already running? (set RMR_PORT to use another port)`);
-      else log.error(e);
-      process.exit(1);
-    });
 }

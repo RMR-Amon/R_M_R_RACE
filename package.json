@@ -1,16 +1,22 @@
 {
   "name": "r_m_r_race",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
-    "typecheck": "tsc --noEmit && tsc -p server/tsconfig.json",
-    "server": "tsx server/index.ts",
+    "typecheck": "tsc --noEmit && tsc -p server/tsconfig.json && tsc -p electron/tsconfig.json",
+    "server": "tsx server/cli.ts",
     "start": "npm run build && npm run server",
-    "test:lan": "tsx server/test/lanTest.ts"
+    "test:lan": "tsx server/test/lanTest.ts",
+    "desktop:bundle": "node electron/build.mjs",
+    "desktop": "npm run build && npm run desktop:bundle && node electron/launch.mjs",
+    "desktop:e2e": "npm run build && npm run desktop:bundle && node electron/launch.mjs --e2e",
+    "dist:win": "npm run build && npm run desktop:bundle && electron-builder --win",
+    "dist:mac": "npm run build && npm run desktop:bundle && electron-builder --mac",
+    "dist:linux": "npm run build && npm run desktop:bundle && electron-builder --linux"
   },
   "dependencies": {
     "react": "18.3.1",
@@ -26,10 +32,69 @@
     "@types/ws": "8.5.13",
     "@vitejs/plugin-react": "4.3.3",
     "autoprefixer": "10.4.20",
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8",
+    "esbuild": "0.23.1",
     "postcss": "8.4.47",
     "tailwindcss": "3.4.14",
     "tsx": "4.19.1",
     "typescript": "5.6.3",
     "vite": "5.4.10"
+  },
+  "description": "RMR_race — arcade 3D racing with LAN multiplayer",
+  "author": "R_M_R",
+  "main": "dist-electron/main.cjs",
+  "build": {
+    "appId": "com.rmr.race",
+    "productName": "RMR_race",
+    "directories": {
+      "output": "release",
+      "buildResources": "electron"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "include": "electron/installer.nsh",
+      "artifactName": "RMR_race-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "RMR_race-Portable-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.racing-games"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Game"
+    }
   }
 }
