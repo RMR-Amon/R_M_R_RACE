@@ -5,11 +5,10 @@
  */
 import { NET, GAME_VERSION } from '../src/net/config';
 import type { DesktopLanInfo } from '../src/net/desktop';
-import { startServer, type RunningServer } from '../server/index';
+import type { RunningServer } from '../server/index';
+import { launchServer } from '../server/launch';
 import { primaryAddress, rankedInterfaces } from '../server/netInfo';
 import { log } from '../server/log';
-
-const PORT_TRIES = 10;
 
 export class LanController {
   private srv: RunningServer | null = null;
@@ -29,7 +28,7 @@ export class LanController {
       running: !!srv,
       port: srv?.port ?? NET.HTTP_PORT,
       udpPort: NET.DISCOVERY_PORT,
-      discovery: !!srv && !srv.discovery.error,
+      discovery: !!srv && srv.discovery.active,
       primary: primaryAddress(),
       interfaces: rankedInterfaces().map((i) => ({ name: i.name, address: i.address })),
       error: this.error,
@@ -41,23 +40,16 @@ export class LanController {
     if (this.srv) return Promise.resolve(this.info());
     if (this.starting) return this.starting;
     this.starting = (async () => {
-      let lastErr: unknown = null;
-      for (let i = 0; i < PORT_TRIES && !this.srv; i++) {
-        const port = NET.HTTP_PORT + (i === 0 ? 0 : i + 1); // 47800, 47802… (47801 is the UDP port)
-        try {
-          this.srv = await startServer({ port, udpPort: NET.DISCOVERY_PORT, distDir: this.distDir });
-        } catch (e) {
-          lastErr = e;
-          if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE') break;
-        }
+      try {
+        this.srv = (await launchServer({ port: NET.HTTP_PORT, udpPort: NET.DISCOVERY_PORT, distDir: this.distDir })).srv;
+        this.error = null;
+      } catch (e) {
+        this.error = String((e as Error)?.message ?? e);
       }
-      this.error = this.srv ? null : String((lastErr as Error)?.message ?? lastErr);
       if (this.srv) log.info(`desktop LAN server on port ${this.srv.port}, LAN address ${primaryAddress() ?? 'none'}`);
       else log.error(`desktop LAN server failed: ${this.error}`);
       this.starting = null;
       this.emit();
-      // the UDP socket reports bind errors asynchronously
-      setTimeout(() => this.emit(), 600);
       this.watchNetwork();
       return this.info();
     })();

@@ -10,9 +10,16 @@
  */
 import WebSocket from 'ws';
 import { setLogLevel } from '../log';
+import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import { startServer, type RunningServer } from '../index';
+import { launchServer } from '../launch';
+import { isLanHost, isLanOrigin, primaryAddress } from '../netInfo';
 import { trackFor } from '../gameData';
-import { GAME_ID, NET, PROTOCOL_VERSION } from '../../src/net/config';
+import { GAME_ID, GAME_VERSION, NET, PROTOCOL_VERSION } from '../../src/net/config';
 import { gridSpot } from '../../src/game/grid';
 import {
   STATE_BYTES,
@@ -117,21 +124,21 @@ class Bot {
 
   async create(settings: Partial<RoomSettings> = {}, carId = 'apex') {
     await this.open();
-    this.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, join: 'create', settings: { ...SETTINGS, ...settings }, profile: profile(this.name, carId) });
+    this.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: GAME_VERSION, join: 'create', settings: { ...SETTINGS, ...settings }, profile: profile(this.name, carId) });
     await this.waitFor((m) => m.t === 'welcome' || m.t === 'error');
     return this;
   }
 
   async join(roomId: string, code?: string, carId = 'apex') {
     await this.open();
-    this.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, join: 'join', roomId, code, profile: profile(this.name, carId) });
+    this.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: GAME_VERSION, join: 'join', roomId, code, profile: profile(this.name, carId) });
     return this.waitFor((m) => m.t === 'welcome' || m.t === 'error');
   }
 
   async resume() {
     await this.open();
     this.n = 0;
-    this.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, join: 'resume', roomId: this.roomId, token: this.token });
+    this.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: GAME_VERSION, join: 'resume', roomId: this.roomId, token: this.token });
     return this.waitFor((m) => m.t === 'welcome' || m.t === 'error');
   }
 
@@ -255,13 +262,140 @@ async function testDiscovery() {
     // a different protocol version is rejected
     const v = new Bot(a.port, 'Old');
     await v.open();
-    v.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION + 1, join: 'join', roomId: ha.roomId, profile: profile('Old') });
+    v.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION + 1, ver: GAME_VERSION, join: 'join', roomId: ha.roomId, profile: profile('Old') });
     const e = await v.waitFor((m) => m.t === 'error');
     check('client with another protocol version is refused', e?.t === 'error' && e.code === 'version');
+    const g = new Bot(a.port, 'OtherGame');
+    await g.open();
+    g.send({ t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: '0.0.1', join: 'join', roomId: ha.roomId, profile: profile('OtherGame') });
+    const ge = await g.waitFor((m) => m.t === 'error');
+    check('client with another game version is refused', ge?.t === 'error' && ge.code === 'version');
     agent.close();
   } finally {
     await a.close();
   }
+}
+
+/** plain HTTP request with full control over the headers */
+function httpGet(port: number, url: string, headers: Record<string, string> = {}): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    http
+      .get({ host: '127.0.0.1', port, path: url, headers }, (res) => {
+        let body = '';
+        res.on('data', (d) => (body += d));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      })
+      .on('error', reject);
+  });
+}
+
+/** does the WebSocket endpoint accept this Origin / Host? */
+function wsAccepts(port: number, headers: Record<string, string>): Promise<boolean> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/agent`, { headers });
+    ws.on('open', () => {
+      ws.close();
+      resolve(true);
+    });
+    ws.on('error', () => resolve(false));
+  });
+}
+
+async function testBrowserFirst() {
+  console.log('\n[8] Browser-first: launcher, served page, origin rules, address handling, bounded connection attempts');
+  // ---- launcher: port fallback and self check
+  const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'rmr-dist-'));
+  fs.mkdirSync(path.join(dist, 'assets'));
+  fs.writeFileSync(path.join(dist, 'index.html'), '<!doctype html><html><head><title>t</title></head><body></body></html>');
+  fs.writeFileSync(path.join(dist, 'assets', 'app-1.js'), 'export {}');
+  const blocker = net.createServer().listen(47950, '0.0.0.0');
+  await new Promise((r) => blocker.once('listening', r));
+  const { srv, check: self, fellBack } = await launchServer({ port: 47950, udpPort: 47951, distDir: dist });
+  try {
+    check('busy port: the server falls back to the next free one', fellBack && srv.port === 47952, `port ${srv.port}`);
+    check('self check: HTTP and WebSocket answer with this server\'s id', self.http && self.ws);
+    check('self check: the server answers on the real LAN address', primaryAddress() === null || self.lan === true, `${self.lanAddress ?? 'no network'}`);
+    check('self check: discovery status comes from a real broadcast', self.discovery === 'verified', self.discovery);
+    let fixedFailed = false;
+    await launchServer({ port: 47950, udpPort: 47951, distDir: dist, fixedPort: true }).catch((e: NodeJS.ErrnoException) => (fixedFailed = e.code === 'EADDRINUSE'));
+    check('an explicitly chosen busy port is an error, not a silent change', fixedFailed);
+
+    const host = await new Bot(srv.port, 'Fb').create({ name: 'Fallback room' });
+    const info = JSON.parse((await httpGet(srv.port, '/api/rooms')).body) as { rooms: { port: number }[]; self: { port: number; players: number; roomCount: number; addresses: string[] } };
+    check('rooms and server info carry the real (fallback) port', info.rooms[0]?.port === 47952 && info.self.port === 47952);
+    check('player / room counters are real', info.self.players === 1 && info.self.roomCount === 1);
+    check('localhost is never offered as the address for others', info.self.addresses.every((a) => !a.startsWith('127.')));
+    host.close();
+
+    // ---- served page
+    const page = await httpGet(srv.port, '/');
+    check('served page is marked as coming from a LAN host', page.status === 200 && page.body.includes('name="rmr-lan-host"') && page.headers['cache-control'] === 'no-cache');
+    check('assets are served, missing assets are 404 (not the page)', (await httpGet(srv.port, '/assets/app-1.js')).status === 200 && (await httpGet(srv.port, '/assets/gone.js')).status === 404);
+    check('path traversal is refused', [403, 404].includes((await httpGet(srv.port, '/..%2f..%2fpackage.json')).status));
+
+    // ---- who may talk to the server
+    check('API: website origin refused, LAN origin allowed without wildcard', (await httpGet(srv.port, '/api/rooms', { origin: 'https://evil.example' })).status === 403 && (await httpGet(srv.port, '/api/rooms', { origin: 'http://192.168.1.7:47800' })).headers['access-control-allow-origin'] === 'http://192.168.1.7:47800');
+    check('API: foreign Host header (DNS rebinding) refused', (await httpGet(srv.port, '/api/rooms', { host: 'evil.example' })).status === 403);
+    check('WebSocket: website origins refused', !(await wsAccepts(srv.port, { origin: 'https://r-m-r-race.netlify.app' })) && !(await wsAccepts(srv.port, { origin: 'http://evil.example' })) && !(await wsAccepts(srv.port, { origin: 'null' })));
+    check('WebSocket: pages of LAN hosts and the desktop app allowed', (await wsAccepts(srv.port, { origin: 'http://192.168.1.7:47800' })) && (await wsAccepts(srv.port, { origin: 'http://localhost:5173' })) && (await wsAccepts(srv.port, { origin: 'app://rmr' })));
+    check('host / origin rules', isLanHost('my-pc') && isLanHost('game.local') && isLanHost('[::1]') && !isLanHost('8.8.8.8') && !isLanHost('a.com') && !isLanOrigin('http://192.168.1.7.evil.com') && !isLanOrigin('https://192.168.1.7'));
+  } finally {
+    await srv.close();
+    blocker.close();
+    fs.rmSync(dist, { recursive: true, force: true });
+  }
+
+  // ---- browser code: mode detection and address entry
+  const g = globalThis as unknown as { location: unknown; document: unknown; rmrDesktop?: unknown };
+  const at = (href: string, marked: boolean) => {
+    const u = new URL(href);
+    g.location = { href, protocol: u.protocol, hostname: u.hostname, port: u.port, host: u.host, search: u.search };
+    g.document = { querySelector: () => (marked ? {} : null) };
+  };
+  const lan = await import('../../src/net/lanService');
+  const modes: [string, boolean, string, string | null, boolean][] = [
+    ['https://r-m-r-race.netlify.app/', false, 'unsupported', null, false],
+    ['http://192.168.1.100:47800/', true, 'served', '192.168.1.100:47800', true],
+    ['http://192.168.1.100:47804/', true, 'served', '192.168.1.100:47804', true],
+    ['http://localhost:47800/', true, 'served', 'localhost:47800', false],
+    ['http://localhost:5173/', false, 'dev', 'localhost:47800', false],
+    ['http://example.com/', false, 'unsupported', null, false],
+    ['https://192.168.1.100/', true, 'unsupported', null, false],
+  ];
+  const wrong = modes.filter(([href, marked, mode, host, guest]) => {
+    at(href, marked);
+    return lan.lanMode() !== mode || lan.serviceHost() !== host || lan.isGuestPage() !== guest;
+  });
+  check('page mode / server address per origin (Netlify, LAN IP, fallback port, localhost, dev)', wrong.length === 0, wrong.map((w) => w[0]).join(', '));
+  at('http://192.168.1.100:47804/', true);
+  const listing = { address: null, port: 47804 } as unknown as Parameters<typeof lan.roomUrl>[0];
+  check('joining: own room → this server, remote room → its real IP and port', lan.roomUrl(listing) === 'ws://192.168.1.100:47804/play' && lan.roomUrl({ ...listing, address: '192.168.1.55', port: 47802 }) === 'ws://192.168.1.55:47802/play');
+  const good: [string, string][] = [
+    ['192.168.1.100', 'http://192.168.1.100:47800/'],
+    [' http://10.0.0.5:47802/ ', 'http://10.0.0.5:47802/'],
+    ['my-pc.local:47800', 'http://my-pc.local:47800/'],
+  ];
+  const badIn = ['', 'https://192.168.1.1', '8.8.8.8', 'evil.com', '192.168.1', '192.168.1.300', '192.168.1.1:99999', 'javascript:alert(1)', '192.168.1.1/../x', 'user@192.168.1.1'];
+  check('web address field accepts only local addresses', good.every(([i, o]) => lan.lanUrl(i) === o) && badIn.every((i) => lan.lanUrl(i) === null), badIn.filter((i) => lan.lanUrl(i) !== null).join(', '));
+  const self2 = { port: 47804, interfaces: [{ name: 'vEthernet', address: '172.20.0.1', virtual: true }, { name: 'Wi-Fi', address: '192.168.1.9', virtual: false }] } as unknown as Parameters<typeof lan.shareAddress>[0];
+  check('shared address / QR: real adapter before virtual ones, never localhost', lan.shareAddress(self2) === '192.168.1.9:47804' && lan.shareAddress(null) === null);
+
+  // ---- failures must end, not hang
+  const { net: session } = await import('../../src/net/session');
+  let t0 = Date.now();
+  session.join('ws://127.0.0.1:47999/play', 'abcdef12', profile('X'));
+  check('closed port → clear error', (await until(() => session.view.phase === 'ended', 15000)) && session.view.fatal?.code === 'unreachable', `${Date.now() - t0} ms`);
+  session.dismiss();
+  t0 = Date.now();
+  session.join('ws://10.255.255.1:47800/play', 'abcdef12', profile('X'));
+  check('unreachable IP → clear error within the time limit', (await until(() => session.view.phase === 'ended', 20000)) && session.view.fatal?.code === 'unreachable', `${Date.now() - t0} ms`);
+  session.dismiss();
+  const mute = net.createServer(() => {}).listen(47998, '127.0.0.1');
+  t0 = Date.now();
+  session.join('ws://127.0.0.1:47998/play', 'abcdef12', profile('X'));
+  check('a server that accepts but never answers → clear error', (await until(() => session.view.phase === 'ended', 20000)) && session.view.fatal?.code === 'unreachable', `${Date.now() - t0} ms`);
+  session.dismiss();
+  mute.close();
 }
 
 async function testLobby(srv: RunningServer) {
@@ -614,6 +748,7 @@ const main = async () => {
     await testReconnect(srv);
     await testRobustness(srv);
     await testBrowserSession(srv);
+    await testBrowserFirst();
   } finally {
     const shut = await new Bot(srv.port, 'S').create({ name: 'Shutdown' });
     await srv.close();

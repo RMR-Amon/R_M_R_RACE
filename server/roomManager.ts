@@ -34,6 +34,13 @@ export class RoomManager {
     return [...this.rooms.values()].map((r) => r.listing(this.sid, this.port, GAME_VERSION));
   }
 
+  /** players currently connected to any room */
+  players(): number {
+    let n = 0;
+    for (const r of this.rooms.values()) for (const p of r.players.values()) if (p.peer) n++;
+    return n;
+  }
+
   tick(now: number) {
     for (const r of [...this.rooms.values()]) r.tick(now);
   }

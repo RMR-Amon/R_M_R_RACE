@@ -1,10 +1,8 @@
 /**
- * RMR_race LAN host server.
- *
- *   npm run server        (or: npm start — builds the game first)
+ * RMR_race LAN host server (started by server/launch.ts: npm start, or the optional desktop app).
  *
  * One process per computer that hosts (or wants to find) LAN games. It
- *  - serves the built game over HTTP, so phones / other PCs can simply open http://<ip>:47800;
+ *  - serves the built game over HTTP: players only open http://<ip>:47800 in a browser;
  *  - runs the WebSocket endpoint for the room list (/agent) and for players (/play);
  *  - announces its rooms on the LAN and listens for other hosts' rooms (UDP 47801);
  *  - is the authority for the lobbies and matches of the rooms it hosts.
@@ -29,7 +27,7 @@ import {
 import { CAR_IDS, DEFAULT_LOOK, RACE_MAP_IDS } from './gameData';
 import { Discovery } from './discovery';
 import { log } from './log';
-import { isLanAddress, plainIp, rankedInterfaces } from './netInfo';
+import { isLanAddress, isLanHostHeader, isLanOrigin, plainIp, rankedInterfaces } from './netInfo';
 import { Peer } from './peer';
 import type { Player, Room } from './room';
 import { RoomManager } from './roomManager';
@@ -53,6 +51,8 @@ export interface RunningServer {
   sid: string;
   manager: RoomManager;
   discovery: Discovery;
+  /** players currently connected */
+  players(): number;
   close(): Promise<void>;
 }
 
@@ -69,22 +69,26 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   const hostInfo = (): HostInfo => ({
     sid,
     addresses: rankedInterfaces().map((i) => i.address),
-    interfaces: rankedInterfaces().map((i) => ({ name: i.name, address: i.address })),
+    interfaces: rankedInterfaces().map((i) => ({ name: i.name, address: i.address, virtual: !!i.virtual })),
     port,
-    discovery: !discovery.error,
+    players: manager.players(),
+    roomCount: manager.rooms.size,
+    discovery: discovery.active,
     version: GAME_VERSION,
   });
 
   // ------------------------------------------------------------------------------------------ HTTP
   const server = http.createServer((req, res) => {
-    if (!isLanAddress(req.socket.remoteAddress)) {
+    const origin = req.headers.origin;
+    if (!isLanAddress(req.socket.remoteAddress) || !isLanHostHeader(req.headers.host) || !isLanOrigin(origin)) {
       res.writeHead(403).end();
       return;
     }
     const url = req.url ?? '/';
     if (url.startsWith('/api/')) {
-      // used by "connect by IP": lets a browser on another device ask this host for its rooms
-      res.setHeader('access-control-allow-origin', '*');
+      // pages served by OTHER hosts of this network ask for rooms / reachability; websites may not
+      if (origin) res.setHeader('access-control-allow-origin', origin);
+      res.setHeader('vary', 'origin');
       res.setHeader('content-type', 'application/json; charset=utf-8');
       res.setHeader('cache-control', 'no-store');
       if (url.startsWith('/api/rooms')) res.end(JSON.stringify({ game: GAME_ID, proto: PROTOCOL_VERSION, rooms: manager.listings(), self: hostInfo() }));
@@ -106,7 +110,8 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
   server.on('upgrade', (req, socket, head) => {
     const ip = plainIp(req.socket.remoteAddress);
     const pathname = (req.url ?? '').split('?')[0];
-    if (!isLanAddress(ip) || (pathname !== '/agent' && pathname !== '/play') || peers.size >= MAX_CONNECTIONS || (perIp.get(ip) ?? 0) >= MAX_PER_IP) {
+    const lan = isLanAddress(ip) && isLanHostHeader(req.headers.host) && isLanOrigin(req.headers.origin);
+    if (!lan || (pathname !== '/agent' && pathname !== '/play') || peers.size >= MAX_CONNECTIONS || (perIp.get(ip) ?? 0) >= MAX_PER_IP) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
@@ -179,7 +184,8 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
 
   function onHello(peer: Peer, msg: Record<string, unknown>, now: number) {
     if (msg.t !== 'hello') return fail(peer, 'badMessage');
-    if (msg.game !== GAME_ID || msg.proto !== PROTOCOL_VERSION) return fail(peer, 'version');
+    // another game version may have other cars / tracks / physics: such a race cannot be fair
+    if (msg.game !== GAME_ID || msg.proto !== PROTOCOL_VERSION || msg.ver !== GAME_VERSION) return fail(peer, 'version');
     if (msg.join === 'create') {
       const settings = cleanSettings(msg.settings, RACE_MAP_IDS);
       const profile = cleanProfile(msg.profile, CAR_IDS, DEFAULT_LOOK);
@@ -277,28 +283,38 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
       pushRoomLists(now);
     }
   };
-  schedule();
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, opts.host ?? '0.0.0.0', () => {
+    server.listen(port, opts.host ?? '0.0.0.0', async () => {
       server.off('error', reject);
-      discovery.start();
+      server.on('error', (e) => log.error('http server:', e.message));
+      nextAt = performance.now() + period;
+      schedule();
+      // report success only when the discovery socket is really up (or has really failed)
+      await discovery.start();
       resolve({
         port,
         sid,
         manager,
         discovery,
-        close: () =>
-          new Promise<void>((done) => {
-            running = false;
-            if (timer) clearTimeout(timer);
-            manager.closeAll('shutdown');
-            discovery.stop();
-            for (const p of peers) p.ws.terminate();
-            wss.close();
+        players: () => manager.players(),
+        close: async () => {
+          running = false;
+          if (timer) clearTimeout(timer);
+          manager.closeAll('shutdown');
+          discovery.stop();
+          // let the "server was shut down" message reach the players before the sockets go away
+          for (const p of peers) p.close(1001, 'shutdown');
+          const until = performance.now() + 500;
+          while (peers.size && performance.now() < until) await new Promise((r) => setTimeout(r, 20));
+          for (const p of peers) p.ws.terminate();
+          wss.close();
+          await new Promise<void>((done) => {
             server.close(() => done());
-          }),
+            server.closeAllConnections();
+          });
+        },
       });
     });
   });

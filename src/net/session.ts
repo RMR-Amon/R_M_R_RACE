@@ -4,7 +4,7 @@
  * server messages into UI phases; during a match it feeds the RaceLink used by the engine.
  */
 import { useSyncExternalStore } from 'react';
-import { GAME_ID, NET, PROTOCOL_VERSION } from './config';
+import { GAME_ID, GAME_VERSION, NET, PROTOCOL_VERSION } from './config';
 import { Connection, type ConnState } from './connection';
 import type { ClientMsg, ErrorCode, MatchInfo, NoticeKey, Profile, ResultInfo, RoomSettings, RoomState, ServerMsg } from './protocol';
 import { RaceLink } from './raceLink';
@@ -105,6 +105,11 @@ class NetSession {
     };
   };
 
+  /** host:port of the server the room lives on (null without a session) */
+  get host(): string | null {
+    return this.conn ? new URL(this.conn.url).host : null;
+  }
+
   private set(patch: Partial<NetView>) {
     this.v = { ...this.v, ...patch };
     this.listeners.forEach((f) => f());
@@ -116,13 +121,13 @@ class NetSession {
 
   create(url: string, settings: RoomSettings, profile: Profile) {
     this.begin(url, null, (resume) =>
-      resume ? this.resumeHello() : { t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, join: 'create', settings, profile },
+      resume ? this.resumeHello() : { t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: GAME_VERSION, join: 'create', settings, profile },
     );
   }
 
   join(url: string, roomId: string, profile: Profile, code?: string) {
     this.begin(url, roomId, (resume) =>
-      resume ? this.resumeHello() : { t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, join: 'join', roomId, profile, code },
+      resume ? this.resumeHello() : { t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: GAME_VERSION, join: 'join', roomId, profile, code },
     );
   }
 
@@ -136,7 +141,7 @@ class NetSession {
 
   private resumeHello(): ClientMsg | null {
     if (!this.token || !this.roomId) return null;
-    return { t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, join: 'resume', roomId: this.roomId, token: this.token };
+    return { t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: GAME_VERSION, join: 'resume', roomId: this.roomId, token: this.token };
   }
 
   private begin(url: string, roomId: string | null, hello: (resume: boolean) => ClientMsg | null, token: string | null = null) {

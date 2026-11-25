@@ -196,6 +196,8 @@ export async function runE2E(origin: string): Promise<number> {
     await B.waitFor(`document.body.textContent.includes('was shut down') || document.body.textContent.includes('closed the room') || document.body.textContent.includes('no longer')`, 20000, 'guest notified');
     await B.shot('07-host-stopped.png');
     check('guest is told when the host stops its server', true);
+    // stopping takes a moment (players get the message first)
+    await A.waitFor(`[...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Start' && !b.disabled)`, 4000, 'Start button');
     await A.click('Start');
     await A.waitFor(`document.body.textContent.includes('running')`, 8000, 'server restarted');
     check('host can start the LAN server again from the game', true);

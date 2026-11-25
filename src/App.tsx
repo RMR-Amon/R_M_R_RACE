@@ -14,6 +14,7 @@ import { getMap, mapName } from './data/maps';
 import { getCar } from './data/cars';
 import { net, savedSession, useNet, type ResultsView } from './net/session';
 import { desktopApi, setJoinHost, type LaunchRoute } from './net/desktop';
+import { isGuestPage } from './net/lanService';
 import type { MatchInfo } from './net/protocol';
 import type { RaceConfig, RaceResult } from './game/types';
 
@@ -96,7 +97,8 @@ function netResult(r: ResultsView, you: number): RaceResult {
 
 export default function App() {
   const [save, update] = useSave();
-  const [screen, setScreen] = useState<Screen>('menu');
+  // a player who opened the organizer's address sees the LAN rooms right away
+  const [screen, setScreen] = useState<Screen>(() => (isGuestPage() ? 'mp' : 'menu'));
   const [config, setConfig] = useState<RaceConfig | null>(null);
   const [result, setResult] = useState<RaceResult | null>(null);
   const [passed, setPassed] = useState<boolean | null>(null);

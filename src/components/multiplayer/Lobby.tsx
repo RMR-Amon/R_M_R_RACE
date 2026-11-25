@@ -3,7 +3,8 @@ import { ScreenShell } from '../ui';
 import { Avatar, ErrorModal, NoticeToasts, PingBadge, RoomSettingsForm, errorText, matchLabel, profileFromSave } from './common';
 import { CARS, getCar, paintedCar } from '../../data/cars';
 import { NET } from '../../net/config';
-import { useRooms } from '../../net/lanService';
+import { serviceHost, shareAddress, useRooms } from '../../net/lanService';
+import { LanAddress } from './LanAddress';
 import { net, useNet } from '../../net/session';
 import { t, useLang } from '../../i18n';
 import type { RoomSettings, RoomState } from '../../net/protocol';
@@ -297,19 +298,13 @@ function ConnChip({ conn, rtt }: { conn: string; rtt: number }) {
 
 function InviteHint() {
   const w = useRooms();
+  // the room may live on another computer than the one this page came from
+  const host = net.host;
+  const address = !host || host === serviceHost() ? shareAddress(w.self) : host;
   return (
-    <div className="rounded-2xl bg-white/[0.04] px-4 py-3 text-xs text-white/55 ring-1 ring-white/10">
+    <div className="space-y-3 rounded-2xl bg-white/[0.04] px-4 py-3 text-sm text-white/60 ring-1 ring-white/10">
       <div>📶 {t('lobby.invite')}</div>
-      {w.self && w.self.addresses.length > 0 && (
-        <div className="mt-1">
-          📱 {t('mp.devices')}{' '}
-          {w.self.addresses.map((a) => (
-            <code key={a} className="mx-0.5 rounded bg-white/10 px-1.5 py-0.5 text-white/75">
-              http://{a}:{w.self!.port}
-            </code>
-          ))}
-        </div>
-      )}
+      {address && <LanAddress address={address} />}
     </div>
   );
 }

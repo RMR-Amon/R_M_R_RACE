@@ -8,7 +8,7 @@ export const GAME_ID = 'RMR_race';
 /** wire protocol version: hosts and clients with a different version do not see / join each other */
 export const PROTOCOL_VERSION = 1;
 /** shown in the room list */
-export const GAME_VERSION = '1.2.0';
+export const GAME_VERSION = '1.3.0';
 
 export const NET = {
   /** host server: HTTP (game files for phones / other PCs) + WebSocket on the same TCP port */
@@ -42,6 +42,8 @@ export const NET = {
   DEAD_AFTER_MS: 6000,
   /** a dropped player keeps their slot (and car) for this long, so they can reconnect */
   RECONNECT_GRACE_MS: 15000,
+  /** one connection attempt (socket open + accepted by the host) may take this long */
+  CONNECT_TIMEOUT_MS: 5000,
   /** the first message on a new socket must arrive within this time */
   HELLO_TIMEOUT_MS: 5000,
 

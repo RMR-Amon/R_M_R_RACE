@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ScreenShell, TopBar } from '../ui';
 import { DEFAULT_SETTINGS, ErrorModal, RoomSettingsForm, matchLabel, playerName, profileFromSave } from './common';
 import { THEMES, getMap } from '../../data/maps';
 import { GAME_VERSION, NET } from '../../net/config';
-import { createUrl, lanMode, probeHost, roomUrl, rooms, useRooms } from '../../net/lanService';
-import { DESKTOP_LAN_LINK, INSTALLER_URL, RELEASES_URL, desktopApi, takeJoinHost, useDesktopLan } from '../../net/desktop';
+import { createUrl, lanMode, probeHost, roomUrl, rooms, shareAddress, useRooms } from '../../net/lanService';
+import { desktopApi, takeJoinHost, useDesktopLan } from '../../net/desktop';
+import { LanAddress } from './LanAddress';
+import { LanGuide } from './LanGuide';
 import { net, savedSession, useNet } from '../../net/session';
 import { t, useLang } from '../../i18n';
 import type { DiscoveredRoom } from '../../net/protocol';
@@ -29,7 +31,7 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
     return (
       <ScreenShell>
         <TopBar title={t('mp.title')} onBack={onBack} />
-        <DesktopRequired />
+        <LanGuide />
       </ScreenShell>
     );
   }
@@ -80,7 +82,7 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
           />
         </section>
 
-        {mode === 'desktop' && <LanServerPanel />}
+        <LanServerPanel />
 
         <div className="grid grid-cols-2 gap-3">
           {(
@@ -111,80 +113,21 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
   );
 }
 
-/**
- * Web version (HTTPS, e.g. Netlify): a browser page cannot host or discover LAN games.
- * "Open" hands over to the installed desktop app through its rmrrace:// protocol (the browser
- * asks the player first); without the app the player downloads the installer from GitHub Releases.
- */
-function DesktopRequired() {
-  const [tried, setTried] = useState<'no' | 'waiting' | 'opened' | 'missing'>('no');
-  const open = () => {
-    setTried('waiting');
-    let left = false;
-    // the page loses focus / gets hidden when the browser hands the link to the app (or shows its prompt)
-    const mark = () => {
-      left = true;
-    };
-    window.addEventListener('blur', mark, { once: true });
-    document.addEventListener('visibilitychange', mark, { once: true });
-    window.location.href = DESKTOP_LAN_LINK;
-    window.setTimeout(() => {
-      window.removeEventListener('blur', mark);
-      document.removeEventListener('visibilitychange', mark);
-      setTried(left ? 'opened' : 'missing');
-    }, 2500);
-  };
-  return (
-    <div className="mx-auto max-w-3xl space-y-5 px-4 pb-16 sm:px-8">
-      <section className="panel relative animate-slideUp space-y-5 overflow-hidden p-6 text-center sm:p-10">
-        <div className="pointer-events-none absolute -top-24 left-1/2 h-48 w-[36rem] -translate-x-1/2 rounded-full bg-sky-500/25 blur-3xl" />
-        <div className="relative text-6xl">🖥️</div>
-        <h2 className="relative font-display text-3xl uppercase">{t('mp.desktopRequired')}</h2>
-        <p className="relative mx-auto max-w-xl text-white/75">{t('mp.desktopRequiredText')}</p>
-        <div className="relative grid gap-3 sm:grid-cols-2">
-          <button onClick={open} className="btn-primary w-full text-base sm:text-lg">
-            🚀 {t('mp.openDesktop')}
-          </button>
-          <a href={INSTALLER_URL} className={`${tried === 'missing' ? 'btn-primary animate-pulse' : 'btn-ghost'} w-full text-base sm:text-lg`}>
-            ⬇ {t('mp.download')}
-          </a>
-        </div>
-        {tried === 'waiting' && <p className="relative text-sm text-sky-200">{t('mp.openWaiting')}</p>}
-        {tried === 'opened' && <p className="relative text-sm text-emerald-300">✓ {t('mp.openOk')}</p>}
-        {tried === 'missing' && <p className="relative text-sm text-amber-200">{t('mp.openMissing')}</p>}
-        <p className="relative text-xs text-white/50">
-          {t('mp.downloadHint')} ·{' '}
-          <a href={RELEASES_URL} target="_blank" rel="noreferrer" className="underline hover:text-white">
-            GitHub Releases
-          </a>
-        </p>
-      </section>
-      <section className="panel space-y-2 p-5 text-sm text-white/70">
-        <div className="font-display text-base text-white">{t('mp.howTitle')}</div>
-        <p>1. {t('mp.how1')}</p>
-        <p>2. {t('mp.how2')}</p>
-        <p>3. {t('mp.how3')}</p>
-      </section>
-      <section className="panel space-y-2 p-5 text-sm text-white/70">
-        <div className="font-display text-base text-white">{t('mp.whyDesktop')}</div>
-        <p>• {t('mp.why1')}</p>
-        <p>• {t('mp.why2')}</p>
-        <p>• {t('mp.why3')}</p>
-      </section>
-    </div>
-  );
-}
-
-/** desktop: the LAN server of this computer — status, address for the others, start / stop */
+/** the LAN server this page is connected to: real status, address for the players, who is here */
 function LanServerPanel() {
-  const info = useDesktopLan();
-  const [busy, setBusy] = useState(false);
+  const w = useRooms();
+  const desk = useDesktopLan();
   const api = desktopApi();
+  const [busy, setBusy] = useState(false);
+  const online = w.state === 'online';
+  const self = online ? w.self : null;
+  const address = shareAddress(self);
+  // only the optional desktop app can start / stop the server from the game
   const toggle = async () => {
-    if (!api || !info) return;
+    if (!api || !desk) return;
     setBusy(true);
     try {
-      if (info.running) {
+      if (desk.running) {
         net.leave();
         await api.stopLan();
       } else await api.startLan();
@@ -192,34 +135,42 @@ function LanServerPanel() {
       setBusy(false);
     }
   };
+  const status = online ? t('mp.server.running') : w.state === 'connecting' ? t('mp.service.connecting') : api ? t('mp.server.stopped') : t('mp.server.lost');
+  const others = self ? self.interfaces.filter((i) => `${i.address}:${self.port}` !== address) : [];
   return (
-    <section className="panel flex flex-wrap items-center gap-3 p-4 sm:p-5">
-      <span className={`h-3 w-3 shrink-0 rounded-full ${info?.running ? 'animate-pulse bg-emerald-400' : 'bg-rose-400'}`} />
-      <div className="min-w-0 flex-1">
-        <div className="font-display text-base">
-          {t('mp.server.title')}: {info?.running ? t('mp.server.running') : t('mp.server.stopped')}
+    <section className="panel space-y-3 p-4 sm:p-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className={`h-3 w-3 shrink-0 rounded-full ${online ? 'animate-pulse bg-emerald-400' : w.state === 'connecting' ? 'bg-amber-300' : 'bg-rose-400'}`} />
+        <div className="min-w-0 flex-1 font-display text-base">
+          {t('mp.server.title')}: {status}
         </div>
-        {info?.running ? (
-          <div className="text-xs text-white/60">
-            {info.primary ? (
-              <>
-                {t('mp.server.address')} <code className="rounded bg-white/10 px-1.5 py-0.5 text-white/85">{info.primary}:{info.port}</code>
-              </>
-            ) : (
-              t('mp.server.noNetwork')
-            )}
-            {!info.discovery && <span className="ml-2 text-amber-200">· {t('mp.discoveryOff')}</span>}
-            {info.interfaces.length > 1 && (
-              <span className="ml-2 text-white/40">({info.interfaces.map((i) => `${i.name}: ${i.address}`).join(' · ')})</span>
-            )}
-          </div>
-        ) : (
-          info?.error && <div className="text-xs text-rose-300">{t('mp.server.error', { e: info.error })}</div>
+        {self && (
+          <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-bold">
+            👥 {t('mp.server.players', { n: self.players })} · 🏁 {t('mp.server.rooms', { n: self.roomCount })}
+          </span>
+        )}
+        {api && (
+          <button onClick={() => void toggle()} disabled={busy || !desk} className={desk?.running ? 'btn-ghost !py-2 text-sm' : 'btn-primary !py-2 text-sm'}>
+            {desk?.running ? t('mp.server.stop') : t('mp.server.start')}
+          </button>
         )}
       </div>
-      <button onClick={() => void toggle()} disabled={busy || !info} className={info?.running ? 'btn-ghost !py-2 text-sm' : 'btn-primary !py-2 text-sm'}>
-        {info?.running ? t('mp.server.stop') : t('mp.server.start')}
-      </button>
+      {self &&
+        (address ? (
+          <>
+            <p className="text-sm text-white/65">{t('mp.server.address')}</p>
+            <LanAddress address={address} />
+            {others.length > 0 && (
+              <p className="text-xs text-white/45">
+                {t('mp.server.other')} {others.map((i) => `${i.name}: ${i.address}:${self.port}`).join(' · ')}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-amber-200">{t('mp.server.noNetwork')}</p>
+        ))}
+      {self && !self.discovery && <p className="text-sm text-amber-200">{t('mp.discoveryOff')}</p>}
+      {!online && desk?.error && <p className="text-sm text-rose-300">{t('mp.server.error', { e: desk.error })}</p>}
     </section>
   );
 }
@@ -235,9 +186,15 @@ function ServiceBadge() {
   return (
     <span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${cls}`}>
       <span className={`h-2 w-2 rounded-full ${w.state === 'online' ? 'animate-pulse bg-emerald-400' : w.state === 'offline' ? 'bg-rose-400' : 'bg-white/60'}`} />
-      <span className="hidden sm:inline">{t(`mp.service.${w.state}`)}</span>
+      {t(`mp.service.${w.state}`)}
     </span>
   );
+}
+
+/** what to do when the LAN server does not answer depends on where this page came from */
+function offlineHint() {
+  const mode = lanMode();
+  return mode === 'desktop' ? t('mp.serviceOfflineDesktop') : mode === 'served' ? t('mp.serverLostHint') : t('mp.serviceOfflineHint');
 }
 
 function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => void }) {
@@ -254,26 +211,38 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
     window.setTimeout(() => setSpin(false), 700);
   };
 
-  const search = async () => {
-    if (!ip.trim()) return;
-    const target = ip;
+  // the host given by address; its rooms are refreshed like the discovered ones
+  const [target, setTarget] = useState(() => ip.trim());
+  const search = () => {
+    const next = ip.trim();
+    if (!next) return;
     setProbe({ busy: true, rooms: [], error: null });
-    try {
-      const list = await probeHost(target);
-      setProbe({ busy: false, rooms: list, error: list.length ? null : t('mp.ipNoRooms', { ip: target }) });
-    } catch {
-      setProbe({ busy: false, rooms: [], error: t('mp.ipFail', { ip: target }) });
-    }
+    setTarget('');
+    // a new value restarts the polling even when the address is the same
+    window.setTimeout(() => setTarget(next), 0);
   };
-  // a host handed over by a deep link is searched right away
-  const autoSearched = useRef(false);
   useEffect(() => {
-    if (ip && !autoSearched.current) {
-      autoSearched.current = true;
-      void search();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!target) return;
+    let alive = true;
+    let timer = 0;
+    const poll = async () => {
+      let next: typeof probe;
+      try {
+        const list = await probeHost(target);
+        next = { busy: false, rooms: list, error: list.length ? null : t('mp.ipNoRooms', { ip: target }) };
+      } catch {
+        next = { busy: false, rooms: [], error: t('mp.ipFail', { ip: target }) };
+      }
+      if (!alive) return;
+      setProbe(next);
+      timer = window.setTimeout(() => void poll(), 3000);
+    };
+    void poll();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [target]);
 
   // rooms found by IP are merged with the LAN list (without duplicates)
   const list = useMemo(() => {
@@ -297,11 +266,8 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
       {(w.state === 'offline' || w.state === 'stopped') && (
         <div className="animate-slideUp rounded-3xl bg-rose-500/10 p-5 ring-1 ring-rose-400/40">
           <div className="font-display text-xl">⚠️ {t('mp.serviceOffline')}</div>
-          <p className="mt-1 text-sm text-white/75">{lanMode() === 'desktop' ? t('mp.serviceOfflineDesktop') : t('mp.serviceOfflineHint')}</p>
+          <p className="mt-1 text-sm text-white/75">{offlineHint()}</p>
         </div>
-      )}
-      {w.state === 'online' && w.self && !w.self.discovery && (
-        <div className="rounded-2xl bg-amber-400/10 px-4 py-2 text-sm text-amber-100 ring-1 ring-amber-300/30">{t('mp.discoveryOff')}</div>
       )}
 
       {list.length ? (
@@ -319,7 +285,7 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
               <span className="relative text-4xl">📡</span>
             </div>
             <div className="font-display text-2xl">{t('mp.noRooms')}</div>
-            <div className="mt-1 text-xs font-bold uppercase tracking-widest text-sky-300">{t('mp.discoveryActive')}</div>
+            {w.self?.discovery && <div className="mt-1 text-xs font-bold uppercase tracking-widest text-sky-300">{t('mp.discoveryActive')}</div>}
             <p className="mx-auto mt-1 max-w-md text-sm text-white/60">{t('mp.noRoomsHint')}</p>
             <ul className="mx-auto mt-4 max-w-lg space-y-1.5 text-left text-xs text-white/55 sm:text-sm">
               <li>📶 {t('mp.tip1')}</li>
@@ -337,7 +303,7 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
           className="flex gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            void search();
+            search();
           }}
         >
           <input
@@ -353,17 +319,6 @@ function FindRooms({ onJoin }: { onJoin: (r: DiscoveredRoom, code?: string) => v
         </form>
         {probe.error && <p className="text-sm text-rose-300">{probe.error}</p>}
       </div>
-
-      {w.self && w.self.addresses.length > 0 && (
-        <p className="text-center text-xs text-white/45">
-          {t('mp.devices')}{' '}
-          {w.self.addresses.map((a) => (
-            <code key={a} className="mx-1 rounded bg-white/10 px-1.5 py-0.5 text-white/75">
-              http://{a}:{w.self!.port}
-            </code>
-          ))}
-        </p>
-      )}
 
       {askCode && <CodePrompt onCancel={() => setAskCode(null)} onEnter={(code) => onJoin(askCode, code)} />}
     </section>
@@ -483,7 +438,7 @@ function CreateRoom({ save, onCreated }: { save: SaveData; onCreated: () => void
       />
       {w.state !== 'online' && (
         <p className="rounded-2xl bg-rose-500/10 px-4 py-2 text-sm text-rose-200 ring-1 ring-rose-400/30">
-          {lanMode() === 'desktop' ? t('mp.serviceOfflineDesktop') : t('mp.serviceOfflineHint')}
+          {offlineHint()}
         </p>
       )}
       <button onClick={create} disabled={w.state !== 'online'} className="btn-primary w-full text-lg">

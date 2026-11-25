@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Choice, TrackThumb } from '../ui';
 import { ARENA_MAP, RACE_MAPS, THEMES, getMap, mapName, themeName } from '../../data/maps';
 import { getCar } from '../../data/cars';
@@ -82,13 +82,24 @@ export function Avatar({ profile, size = 44 }: { profile: Profile; size?: number
 /** short-lived toasts for lobby / room notices */
 export function NoticeToasts({ notices }: { notices: Notice[] }) {
   const [visible, setVisible] = useState<Notice[]>([]);
+  // every toast has its own timer: a newer notice must not cancel the older one's
+  const timers = useRef(new Map<number, number>());
   useEffect(() => {
     const last = notices[notices.length - 1];
-    if (!last) return;
-    setVisible((v) => (v.some((x) => x.id === last.id) ? v : [...v.slice(-2), last]));
-    const timer = setTimeout(() => setVisible((v) => v.filter((x) => x.id !== last.id)), 3500);
-    return () => clearTimeout(timer);
+    if (!last || timers.current.has(last.id)) return;
+    setVisible((v) => [...v.slice(-2), last]);
+    timers.current.set(
+      last.id,
+      window.setTimeout(() => setVisible((v) => v.filter((x) => x.id !== last.id)), 3500),
+    );
   }, [notices]);
+  useEffect(() => {
+    const all = timers.current;
+    return () => {
+      all.forEach((id) => clearTimeout(id));
+      all.clear();
+    };
+  }, []);
   if (!visible.length) return null;
   return (
     <div className="pointer-events-none fixed inset-x-0 top-16 z-50 flex flex-col items-center gap-2 px-4">

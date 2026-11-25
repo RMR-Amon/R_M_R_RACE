@@ -2,6 +2,8 @@ import os from 'node:os';
 
 export interface LanInterface {
   name: string;
+  /** VM / VPN adapter: other players usually cannot reach this address */
+  virtual?: boolean;
   address: string;
   netmask: string;
   /** directed broadcast address of the subnet (e.g. 192.168.1.255) */
@@ -68,10 +70,57 @@ function score(i: LanInterface): number {
   return s;
 }
 
-/** LAN interfaces sorted best-first */
+let cache: { at: number; list: LanInterface[] } | null = null;
+
+/**
+ * Private-network interfaces sorted best-first (real Wi-Fi / Ethernet before VM and VPN adapters).
+ * Cached for 2 s: asking Windows for the adapters is slow and the room list is pushed often.
+ */
 export function rankedInterfaces(): LanInterface[] {
-  return lanInterfaces().sort((a, b) => score(b) - score(a));
+  const now = Date.now();
+  if (!cache || now - cache.at > 2000) {
+    const list = lanInterfaces()
+      .filter((i) => isLanAddress(i.address))
+      .map((i) => ({ ...i, virtual: score(i) < 0 }))
+      .sort((a, b) => score(b) - score(a));
+    cache = { at: now, list };
+  }
+  return cache.list;
 }
+
+/** position of the interface whose subnet contains `addr` (Infinity when none does) */
+export function subnetRank(addr: string): number {
+  const ip = toInt(addr);
+  const i = rankedInterfaces().findIndex((x) => ((ip & toInt(x.netmask)) >>> 0) === ((toInt(x.address) & toInt(x.netmask)) >>> 0));
+  return i < 0 ? Infinity : i;
+}
+
+/** host names / addresses that can only mean a device on this network (never a public website) */
+export function isLanHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '::1') return true;
+  if (/^[\d.]+$/.test(h) || h.includes(':')) return isLanAddress(h);
+  // computer names ("my-pc") and the usual home-network suffixes
+  return /^[a-z0-9-]+$/.test(h) || /\.(local|lan|home|internal)$/.test(h);
+}
+
+const hostName = (hostPort: string) => (hostPort.startsWith('[') ? hostPort.slice(0, hostPort.indexOf(']') + 1) : hostPort.split(':')[0]);
+
+/**
+ * Browsers always send `Origin` with WebSocket / cross-origin requests. Only pages that come from
+ * the local network (a host server, the dev server) or from the desktop app may talk to us — a
+ * random website must not be able to drive the LAN server through a visitor's browser.
+ * No Origin header = a plain page load or not a browser.
+ */
+export function isLanOrigin(origin: string | undefined): boolean {
+  if (origin === undefined) return true;
+  if (origin === 'app://rmr') return true;
+  const m = /^http:\/\/([^/]+)$/.exec(origin);
+  return !!m && isLanHost(hostName(m[1]));
+}
+
+/** the Host header must name this network too (blocks DNS rebinding) */
+export const isLanHostHeader = (host: string | undefined) => !!host && isLanHost(hostName(host));
 
 /** the address other computers should use to reach this one (null without a network) */
 export function primaryAddress(): string | null {

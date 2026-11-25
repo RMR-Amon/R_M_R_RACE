@@ -10,17 +10,15 @@ npm run dev      # http://localhost:5173
 npm run build    # продакшн-сборка в dist/
 ```
 
-**LAN-мультиплеер (2–8 игроков, одна Wi-Fi сеть, без интернета)** — в Desktop-версии для Windows 10/11:
-[скачать RMR_Race_Setup.exe](https://github.com/RMR-Amon/R_M_R_RACE/releases/latest/download/RMR_Race_Setup.exe).
-На сайте кнопка «Открыть R_M_R Race Desktop» (`rmrrace://lan`) открывает установленное приложение сразу в LAN-мультиплеере.
+**Игра по локальной сети (2–8 игроков, одна Wi-Fi, без интернета)** — прямо в браузере. Сервер запускает только организатор:
 
 ```bash
-npm run desktop     # запустить Desktop-версию из исходников
-npm run dist:win    # собрать release/RMR_Race_Setup.exe и RMR_Race_Portable.exe
-git tag v1.2.0 && git push origin v1.2.0   # GitHub Actions соберёт и опубликует релиз
+npm install   # один раз
+npm start     # проверка, сборка и LAN-сервер; покажет адрес вида http://192.168.x.x:47800
 ```
 
-Архитектура, инструкции, публикация и результаты тестов — [LAN_MULTIPLAYER.md](LAN_MULTIPLAYER.md).
+Остальные открывают этот адрес в обычном браузере (или сканируют QR-код из игры) и входят в комнату — устанавливать ничего не нужно.
+Подробности, порты, брандмауэр, тесты — [LAN_MULTIPLAYER.md](LAN_MULTIPLAYER.md).
 
 **Управление:** WASD / стрелки — езда, Пробел — использовать предмет, Esc — пауза.
 На телефоне и планшете появляются сенсорные кнопки.

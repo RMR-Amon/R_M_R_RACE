@@ -15,7 +15,7 @@ import dgram from 'node:dgram';
 import { GAME_ID, GAME_VERSION, NET, PROTOCOL_VERSION } from '../src/net/config';
 import { cleanName, isInt, isObj, type DiscoveredRoom, type RoomListing } from '../src/net/protocol';
 import { RACE_MAP_IDS } from './gameData';
-import { lanInterfaces, isLanAddress, plainIp, type LanInterface } from './netInfo';
+import { lanInterfaces, isLanAddress, plainIp, subnetRank, type LanInterface } from './netInfo';
 import { log } from './log';
 
 const MAX_PACKET = 2048;
@@ -42,6 +42,13 @@ export class Discovery {
   private lastQueryAnswer = 0;
   /** set when the UDP port could not be opened (rooms can then only be joined by IP) */
   error: string | null = null;
+  /** the UDP socket is bound and can send broadcasts */
+  active = false;
+  /** own broadcasts that came back (proves that sending and receiving broadcasts works here) */
+  selfHeard = 0;
+  private stopped = false;
+  private retryAt = 0;
+  private lastQuery = 0;
 
   constructor(
     private readonly sid: string,
@@ -50,38 +57,66 @@ export class Discovery {
     private readonly udpPort: number = NET.DISCOVERY_PORT,
   ) {}
 
-  start() {
-    const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    this.sock = sock;
-    sock.on('error', (err) => {
-      this.error = err.message;
-      log.warn(`LAN discovery disabled (UDP ${this.udpPort}): ${err.message}`);
-      try {
-        sock.close();
-      } catch {
-        /* already closed */
-      }
-      this.sock = null;
-    });
-    sock.on('message', (buf, rinfo) => this.onPacket(buf, rinfo));
-    sock.bind(this.udpPort, () => {
-      try {
-        sock.setBroadcast(true);
-      } catch (e) {
-        log.warn('setBroadcast failed', e);
-      }
-      log.info(`LAN discovery on UDP ${this.udpPort}`);
-      this.query();
+  /** resolves once the socket is bound or has failed (see `active` / `error`) */
+  start(): Promise<void> {
+    return new Promise((done) => {
+      const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      this.sock = sock;
+      sock.on('error', (err) => {
+        this.error = err.message;
+        this.active = false;
+        log.warn(`LAN discovery failed (UDP ${this.udpPort}): ${err.message} — retrying`);
+        try {
+          sock.close();
+        } catch {
+          /* already closed */
+        }
+        if (this.sock === sock) this.sock = null;
+        this.retryAt = performance.now() + 10000;
+        done();
+      });
+      sock.on('message', (buf, rinfo) => this.onPacket(buf, rinfo));
+      sock.bind(this.udpPort, () => {
+        try {
+          sock.setBroadcast(true);
+          this.active = true;
+          this.error = null;
+          log.debug(`LAN discovery on UDP ${this.udpPort}`);
+          this.query(true);
+        } catch (e) {
+          this.error = String((e as Error).message ?? e);
+        }
+        done();
+      });
     });
   }
 
   stop() {
+    this.stopped = true;
+    this.active = false;
     this.sock?.close();
     this.sock = null;
   }
 
+  /** sends a broadcast and waits for our own copy of it */
+  async verify(ms = 1200): Promise<boolean> {
+    const before = this.selfHeard;
+    const end = performance.now() + ms;
+    while (this.active && performance.now() < end) {
+      this.query(true);
+      await new Promise((r) => setTimeout(r, 150));
+      if (this.selfHeard > before) return true;
+    }
+    return false;
+  }
+
   /** called by the server's main tick */
   tick(now: number) {
+    // the port was taken / the adapter vanished: try again now and then
+    if (!this.sock && !this.stopped && this.retryAt && now >= this.retryAt) {
+      this.retryAt = now + 10000;
+      void this.start();
+    }
     if (now - this.ifaceT > 10000 || !this.ifaces.length) {
       this.ifaces = lanInterfaces();
       this.ifaceT = now;
@@ -93,8 +128,12 @@ export class Discovery {
     for (const [k, r] of this.remote) if (now - r.seen > NET.ROOM_TIMEOUT_MS) this.remote.delete(k);
   }
 
-  /** ask every host on the LAN to announce right now */
-  query() {
+  /** ask every host on the LAN to announce right now (players can trigger this: at most twice a second) */
+  query(force = false) {
+    const now = performance.now();
+    if (!force && now - this.lastQuery < 500) return;
+    this.lastQuery = now;
+    if (!this.ifaces.length) this.ifaces = lanInterfaces();
     this.broadcast(Buffer.from(JSON.stringify({ g: GAME_ID, p: PROTOCOL_VERSION, k: 'q', sid: this.sid } satisfies Packet)));
   }
 
@@ -141,7 +180,10 @@ export class Discovery {
     }
     if (!isObj(pkt) || pkt.g !== GAME_ID || typeof pkt.sid !== 'string' || pkt.sid.length > 32) return;
     // our own broadcasts loop back: local rooms are listed directly
-    if (pkt.sid === this.sid) return;
+    if (pkt.sid === this.sid) {
+      this.selfHeard++;
+      return;
+    }
     if (pkt.k === 'q') {
       // answer queries right away (at most 5 times per second)
       const now = performance.now();
@@ -160,8 +202,14 @@ export class Discovery {
       if (!l) continue;
       const key = sid + '/' + l.roomId;
       announced.add(key);
+      // a host with several adapters is heard from several addresses: keep the one on our best network
+      let address = plainIp(rinfo.address);
+      const known = this.remote.get(key);
+      if (known?.listing.address && now - known.seen < NET.ROOM_TIMEOUT_MS && subnetRank(known.listing.address) < subnetRank(address)) {
+        address = known.listing.address;
+      }
       this.remote.set(key, {
-        listing: { ...l, sid, version, address: plainIp(rinfo.address), port: pkt.port },
+        listing: { ...l, sid, version, address, port: pkt.port },
         seen: now,
         proto: pkt.p,
       });

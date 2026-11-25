@@ -1,5 +1,6 @@
-# Web version (https://r-m-r-race.netlify.app/). LAN multiplayer needs the desktop app;
-# the web build shows "Desktop LAN Mode Required" instead of pretending to connect.
+# Web version (https://r-m-r-race.netlify.app/): single player, story, garage. LAN multiplayer runs
+# on the organizer's computer (npm start); an HTTPS page cannot reach it, so the web version only
+# explains how to open the organizer's address.
 [build]
   command = "npm run build"
   publish = "dist"

@@ -44,9 +44,27 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
   try {
     if (!fs.statSync(target).isFile()) target = index;
   } catch {
+    // a missing bundle must be a 404, not the page with a wrong content type
+    if (path.extname(target)) {
+      res.writeHead(404).end();
+      return;
+    }
     target = index; // single-page app
   }
   const ext = path.extname(target).toLowerCase();
+  if (target === index) {
+    // tells the game that it runs on a LAN host server (whatever port that server got)
+    let html: string;
+    try {
+      html = fs.readFileSync(index, 'utf8').replace('<head>', '<head>\n    <meta name="rmr-lan-host" content="1" />');
+    } catch {
+      res.writeHead(503).end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+    res.end(req.method === 'HEAD' ? undefined : html);
+    return;
+  }
   res.writeHead(200, {
     'content-type': MIME[ext] ?? 'application/octet-stream',
     // hashed bundles can be cached forever, the page itself never
@@ -57,5 +75,8 @@ export function serveStatic(root: string, req: IncomingMessage, res: ServerRespo
     res.end();
     return;
   }
-  fs.createReadStream(target).pipe(res);
+  // the file may disappear while it is sent (the game is being rebuilt): drop this response only
+  fs.createReadStream(target)
+    .on('error', () => res.destroy())
+    .pipe(res);
 }

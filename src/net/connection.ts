@@ -33,6 +33,8 @@ export class Connection {
   private lastHeard = 0;
   private timer = 0;
   private retryTimer = 0;
+  /** limits one attempt: a wrong IP / firewalled port otherwise hangs for 20 s and more */
+  private attemptTimer = 0;
   private attempt = 0;
   private dropAt = 0;
   /** set once the server accepted us (only then is a dropped socket worth resuming) */
@@ -74,6 +76,7 @@ export class Connection {
     this.ended = true;
     clearInterval(this.timer);
     clearTimeout(this.retryTimer);
+    clearTimeout(this.attemptTimer);
     const ws = this.ws;
     this.ws = null;
     if (ws) {
@@ -109,6 +112,8 @@ export class Connection {
     }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
+    clearTimeout(this.attemptTimer);
+    this.attemptTimer = window.setTimeout(() => this.drop(ws), NET.CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
       this.lastHeard = performance.now();
       ws.send(JSON.stringify(hello));
@@ -124,7 +129,10 @@ export class Connection {
           return;
         }
         if (msg.t === 'pong') this.onPong(msg.c, msg.s);
-        if (msg.t === 'welcome') this.setState('open');
+        if (msg.t === 'welcome') {
+          clearTimeout(this.attemptTimer);
+          this.setState('open');
+        }
         this.h.onJson(msg);
       } else if (ev.data instanceof ArrayBuffer) {
         this.h.onBinary(new DataView(ev.data));
@@ -133,6 +141,7 @@ export class Connection {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
+      clearTimeout(this.attemptTimer);
       if (this.ended) return;
       this.scheduleRetry();
     };
@@ -145,8 +154,8 @@ export class Connection {
     if (this.ended) return;
     const now = performance.now();
     if (!this.established) {
-      // a first connection gets a few quick tries (the host may still be starting)
-      if (this.attempt >= 2) return this.finish('unreachable');
+      // a first connection gets one more quick try, then the player is told
+      if (this.attempt >= 1) return this.finish('unreachable');
     } else {
       if (this.state !== 'reconnecting') this.dropAt = now;
       this.setState('reconnecting');
@@ -163,6 +172,19 @@ export class Connection {
     this.h.onClosed(reason);
   }
 
+  /** abandons a socket that does not get anywhere and goes through the retry logic */
+  private drop(ws: WebSocket) {
+    if (this.ws !== ws || this.ended) return;
+    ws.onclose = ws.onmessage = ws.onerror = ws.onopen = null;
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+    this.ws = null;
+    this.scheduleRetry();
+  }
+
   /** server-initiated end (kicked, room closed, fatal error): no reconnection */
   endQuietly() {
     this.close();
@@ -173,14 +195,7 @@ export class Connection {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (performance.now() - this.lastHeard > NET.DEAD_AFTER_MS) {
       // silent socket (Wi-Fi off, host gone): drop it and go through the reconnect logic
-      ws.onclose = null;
-      try {
-        ws.close();
-      } catch {
-        /* ignore */
-      }
-      this.ws = null;
-      this.scheduleRetry();
+      this.drop(ws);
       return;
     }
     this.ping();

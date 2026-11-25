@@ -91,8 +91,12 @@ export interface HostInfo {
   /** LAN addresses of the machine, best (real Wi-Fi / Ethernet) first */
   addresses: string[];
   /** the same with interface names, so the player can pick the right one */
-  interfaces: { name: string; address: string }[];
+  interfaces: { name: string; address: string; virtual: boolean }[];
   port: number;
+  /** players connected to the rooms of this server */
+  players: number;
+  /** rooms on this server */
+  roomCount: number;
   /** false when the UDP discovery port could not be opened */
   discovery: boolean;
   version: string;
@@ -172,9 +176,9 @@ export interface ItemEvent {
 // ============================================================================ control messages
 
 export type ClientMsg =
-  | { t: 'hello'; game: string; proto: number; join: 'create'; settings: RoomSettings; profile: Profile }
-  | { t: 'hello'; game: string; proto: number; join: 'join'; roomId: string; code?: string; profile: Profile }
-  | { t: 'hello'; game: string; proto: number; join: 'resume'; roomId: string; token: string }
+  | { t: 'hello'; game: string; proto: number; ver: string; join: 'create'; settings: RoomSettings; profile: Profile }
+  | { t: 'hello'; game: string; proto: number; ver: string; join: 'join'; roomId: string; code?: string; profile: Profile }
+  | { t: 'hello'; game: string; proto: number; ver: string; join: 'resume'; roomId: string; token: string }
   | { t: 'ping'; c: number; rtt?: number }
   | { t: 'settings'; n: number; s: RoomSettings }
   | { t: 'profile'; n: number; p: Profile }
