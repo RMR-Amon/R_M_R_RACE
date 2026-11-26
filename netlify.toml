@@ -1,6 +1,7 @@
-# Web version (https://r-m-r-race.netlify.app/): single player, story, garage. LAN multiplayer runs
-# on the organizer's computer (npm start); an HTTPS page cannot reach it, so the web version only
-# explains how to open the organizer's address.
+# Website (https://r-m-r-race.netlify.app/): single player, story, garage, online multiplayer.
+# The online server is a Cloudflare Worker (see ONLINE_MULTIPLAYER.md). Its address is set in Netlify:
+#   Site configuration > Environment variables > VITE_MULTIPLAYER_URL = https://….workers.dev
+# Without it the site works, but says that the online server is not connected yet.
 [build]
   command = "npm run build"
   publish = "dist"

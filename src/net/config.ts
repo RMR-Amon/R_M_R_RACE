@@ -7,6 +7,11 @@
 export const GAME_ID = 'RMR_race';
 /** wire protocol version: hosts and clients with a different version do not see / join each other */
 export const PROTOCOL_VERSION = 1;
+/**
+ * online servers and clients must agree on this number. Raise it (and deploy the Worker together with
+ * the site) when the messages, the tracks or the cars change; ordinary site updates leave it alone.
+ */
+export const ONLINE_PROTOCOL = 1;
 /** shown in the room list */
 export const GAME_VERSION = '1.3.0';
 
@@ -66,3 +71,27 @@ export const NET = {
   /** checkpoints per lap the server tracks */
   CHECKPOINTS: 8,
 } as const;
+
+/** online multiplayer (Cloudflare): values both sides need; the tunable ones live in wrangler.toml */
+export const ONLINE = {
+  /** a side that has not heard anything for this long treats the connection as dead */
+  DEAD_AFTER_MS: 9000,
+  /** a dropped player keeps their slot (and car) for this long */
+  RECONNECT_GRACE_MS: 30000,
+  CONNECT_TIMEOUT_MS: 9000,
+  /** liveness ping in a room: answered by the platform without waking (or billing) the room */
+  PING_MS: 2500,
+  /** the same on the matchmaking socket */
+  MENU_PING_MS: 15000,
+  /** clock synchronisation inside a room */
+  CLOCK_MS: 10000,
+  /** car samples one message may carry */
+  MAX_BATCH: 4,
+  /** remote cars are drawn this far in the past (adapts to the measured network) */
+  INTERP_MIN_MS: 120,
+  INTERP_MAX_MS: 600,
+} as const;
+
+/** raw texts of the platform-answered ping */
+export const WS_PING = 'ping';
+export const WS_PONG = 'pong';

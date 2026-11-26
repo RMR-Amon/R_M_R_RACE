@@ -7,7 +7,7 @@
  * No objects are allocated per packet or per frame.
  */
 import { NET } from './config';
-import { F2_TELEPORT, STATE_BYTES, copyCarState, encodeState, newCarState, type CarState } from './protocol';
+import { F2_TELEPORT, STATE_BYTES, copyCarState, encodeBatch, encodeState, newCarState, type CarState } from './protocol';
 
 const TAU = Math.PI * 2;
 const angDiff = (a: number, b: number) => {
@@ -36,18 +36,7 @@ export class LocalSender {
     this.nextAt = now - this.nextAt > this.interval * 2 ? now + this.interval : this.nextAt + this.interval;
     const since = now - this.lastSent;
     const l = this.last;
-    const changed =
-      s.flags !== l.flags ||
-      s.flags2 !== l.flags2 ||
-      Math.abs(s.x - l.x) > 0.01 ||
-      Math.abs(s.z - l.z) > 0.01 ||
-      Math.abs(s.y - l.y) > 0.01 ||
-      Math.abs(angDiff(l.heading, s.heading)) > 0.002 ||
-      Math.abs(s.speed - l.speed) > 0.05 ||
-      Math.abs(s.steer - l.steer) > 0.02 ||
-      Math.abs(s.drift - l.drift) > 0.02 ||
-      Math.abs(angDiff(l.spin, s.spin)) > 0.01;
-    if (!changed && since < NET.KEYFRAME_MS) return null;
+    if (!carChanged(l, s) && since < NET.KEYFRAME_MS) return null;
     copyCarState(l, s);
     this.lastSent = now;
     this.seq = (this.seq + 1) & 0xffff;
@@ -56,7 +45,68 @@ export class LocalSender {
   }
 }
 
-const SIZE = 24;
+/**
+ * Online variant: samples the car `sampleHz` times a second, but sends only `sendHz` messages with all
+ * samples since the last one (messages cost quota, bytes do not). A car that does not change is silent
+ * apart from the 1 s keyframes.
+ */
+export class BatchSender {
+  private seq = 0;
+  private lastSent = -1e9;
+  private nextAt = -1e9;
+  private sendAt = -1e9;
+  private count = 0;
+  private readonly last = newCarState();
+  private readonly buf: CarState[] = [];
+  private readonly interval: number;
+  private readonly period: number;
+  private readonly max: number;
+  sent = 0;
+
+  constructor(sampleHz: number, sendHz: number, maxBatch: number) {
+    this.interval = 1000 / sampleHz;
+    this.period = 1000 / Math.min(sendHz, sampleHz);
+    this.max = maxBatch;
+    for (let i = 0; i < maxBatch; i++) this.buf.push(newCarState());
+  }
+
+  next(s: CarState, now: number): ArrayBuffer | null {
+    if (now < this.nextAt) return null;
+    this.nextAt = now - this.nextAt > this.interval * 2 ? now + this.interval : this.nextAt + this.interval;
+    if (carChanged(this.last, s) || now - this.lastSent >= NET.KEYFRAME_MS) {
+      copyCarState(this.last, s);
+      if (this.count === this.max) {
+        // more samples than fit: drop the middle, keep the first (a teleport mark) and the newest
+        copyCarState(this.buf[this.max - 1], s);
+      } else copyCarState(this.buf[this.count++], s);
+    }
+    // half an interval of tolerance keeps the message rate steady at any frame rate
+    if (!this.count || now < this.sendAt - this.interval / 2) return null;
+    this.sendAt = now - this.sendAt > this.period * 2 ? now + this.period : this.sendAt + this.period;
+    const out = encodeBatch((this.seq = (this.seq + 1) & 0xffff), this.buf, this.count);
+    this.count = 0;
+    this.lastSent = now;
+    this.sent++;
+    return out;
+  }
+}
+
+function carChanged(l: CarState, s: CarState) {
+  return (
+    s.flags !== l.flags ||
+    s.flags2 !== l.flags2 ||
+    Math.abs(s.x - l.x) > 0.01 ||
+    Math.abs(s.z - l.z) > 0.01 ||
+    Math.abs(s.y - l.y) > 0.01 ||
+    Math.abs(angDiff(l.heading, s.heading)) > 0.002 ||
+    Math.abs(s.speed - l.speed) > 0.05 ||
+    Math.abs(s.steer - l.steer) > 0.02 ||
+    Math.abs(s.drift - l.drift) > 0.02 ||
+    Math.abs(angDiff(l.spin, s.spin)) > 0.01
+  );
+}
+
+const SIZE = 48;
 
 export class RemoteBuffer {
   private readonly ring: CarState[] = Array.from({ length: SIZE }, newCarState);

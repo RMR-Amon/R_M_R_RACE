@@ -86,15 +86,28 @@ export class Track {
     );
     // dense sampling, then a light smoothing pass to iron out any tight spots
     const dense = curve.getSpacedPoints(1600).slice(0, -1).map((p) => [p.x, p.z] as [number, number]);
-    for (let it = 0; it < (this.oval ? 0 : SMOOTH_ITER); it++) {
-      const copy = dense.map((p) => [p[0], p[1]] as [number, number]);
+    // (flat buffers: the online server builds tracks too, with a small CPU budget)
+    if (!this.oval) {
       const n = dense.length;
-      for (let i = 0; i < n; i++) {
-        const a = copy[(i - 1 + n) % n];
-        const b = copy[(i + 1) % n];
-        dense[i][0] = (a[0] + 2 * copy[i][0] + b[0]) / 4;
-        dense[i][1] = (a[1] + 2 * copy[i][1] + b[1]) / 4;
+      let from = new Float64Array(n * 2);
+      let to = new Float64Array(n * 2);
+      dense.forEach((p, i) => {
+        from[i * 2] = p[0];
+        from[i * 2 + 1] = p[1];
+      });
+      for (let it = 0; it < SMOOTH_ITER; it++) {
+        for (let i = 0; i < n; i++) {
+          const a = i === 0 ? n - 1 : i - 1;
+          const b = i === n - 1 ? 0 : i + 1;
+          to[i * 2] = (from[a * 2] + 2 * from[i * 2] + from[b * 2]) / 4;
+          to[i * 2 + 1] = (from[a * 2 + 1] + 2 * from[i * 2 + 1] + from[b * 2 + 1]) / 4;
+        }
+        [from, to] = [to, from];
       }
+      dense.forEach((p, i) => {
+        p[0] = from[i * 2];
+        p[1] = from[i * 2 + 1];
+      });
     }
     // cumulative length
     const cum: number[] = [0];

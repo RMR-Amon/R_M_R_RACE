@@ -7,12 +7,12 @@
  * order, battle points and the final results. A browser cannot finish, score or teleport on
  * its own say-so: rejected states are answered with a correction back to the last valid one.
  */
-import crypto from 'node:crypto';
-import { NET } from '../src/net/config';
+import { NET, ONLINE } from '../src/net/config';
 import {
   F2_TELEPORT,
   F_FALLING,
   copyCarState,
+  decodeBatch,
   decodeState,
   encodeSnapshot,
   newCarState,
@@ -40,11 +40,49 @@ const PLACE_REWARD = [500, 350, 250, 160, 110, 70, 50, 40];
 
 export interface MatchHost {
   broadcast(msg: ServerMsg, exceptId?: number): void;
-  broadcastBinary(bytes: Uint8Array): void;
+  /** exceptId: the frame only contains this player's own car */
+  broadcastBinary(bytes: Uint8Array, exceptId?: number): void;
   sendTo(id: number, msg: ServerMsg): void;
   /** the match is over: results go to everybody and the room returns to the lobby */
   onEnd(results: ResultInfo[] | null, abort?: { key: 'loadFailed'; name: string }): void;
+  /** online: players that did not load in time; true = they were removed, start without them */
+  dropSlow?(ids: number[]): boolean;
 }
+
+/** differences between a LAN match and an online match */
+export interface MatchOptions {
+  /** client time budget slack for network jitter (ms) */
+  slackMs?: number;
+  countdownMs?: number;
+  /** every accepted sample is forwarded (clients send several per message), not just the latest */
+  queued?: boolean;
+  net?: MatchInfo['net'];
+}
+
+interface CarSave {
+  entry: RosterEntry;
+  s: CarState;
+  num: number[];
+  finished: boolean;
+  finishTime: number | null;
+  loaded: boolean;
+  status: PlayerStatus;
+  shots: [number, Shot][];
+}
+
+/** everything needed to continue a match after the server process was restarted */
+export interface MatchSave {
+  info: MatchInfo;
+  settings: RoomSettings;
+  total: number;
+  phase: 'loading' | 'countdown' | 'racing' | 'over';
+  goAt: number;
+  loadDeadline: number;
+  finishDeadline: number;
+  cars: CarSave[];
+}
+
+const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 interface Shot {
   kind: HitKind;
@@ -55,7 +93,12 @@ interface Shot {
 class MCar {
   readonly s: CarState = newCarState();
   dirty = true;
+  /** accepted samples not sent yet (MatchOptions.queued) */
+  readonly queue: CarState[] = [];
   lastSent = 0;
+  lastAccept = 0;
+  /** extra distance budget of the first state after a reconnect (seconds) */
+  resumeDt = 0;
   loaded = false;
   status: PlayerStatus = 'online';
   progress: number;
@@ -106,7 +149,7 @@ class MCar {
 }
 
 export class Match {
-  readonly id = crypto.randomBytes(4).toString('hex');
+  readonly id: string;
   readonly info: MatchInfo;
   phase: 'loading' | 'countdown' | 'racing' | 'over' = 'loading';
   goAt = 0;
@@ -121,14 +164,20 @@ export class Match {
   private standingsDirty = true;
   private lastStandings = 0;
   private readonly tmp = newCarState();
+  private readonly batch = Array.from({ length: ONLINE.MAX_BATCH }, newCarState);
+  private readonly total: number;
   private readonly sendList: { id: number; s: CarState }[] = [];
 
   constructor(
     private readonly host: MatchHost,
-    settings: RoomSettings,
+    private readonly settings: RoomSettings,
     roster: RosterEntry[],
     now: number,
+    private readonly opts: MatchOptions = {},
+    restore?: MatchSave,
   ) {
+    this.id = restore?.info.id ?? randomId();
+    this.total = restore?.total ?? roster.length;
     this.battle = settings.mode === 'battle';
     const mapId = this.battle ? 'arena' : settings.mapId;
     this.track = trackFor(mapId);
@@ -143,14 +192,68 @@ export class Match {
       laps: this.laps,
       duration: this.durationMs / 1000,
       items: settings.items,
-      roster,
+      roster: restore?.info.roster ?? roster,
+      ...(opts.net ? { net: opts.net } : {}),
     };
     for (const e of roster) {
-      const spot = gridSpot(this.track, e.slot, roster.length, this.battle);
+      const spot = gridSpot(this.track, e.slot, this.total, this.battle);
       const proj = this.track.project(spot.x, spot.z);
       this.cars.set(e.id, new MCar(e, spot, speedLimit(e.carId), startProgress(this.track, spot, this.battle), proj));
     }
     this.loadDeadline = now + NET.LOAD_TIMEOUT_MS;
+    if (restore) this.load(restore);
+  }
+
+  /** continues a saved match (the save must come from the same track / car data) */
+  static restore(host: MatchHost, save: MatchSave, now: number, opts: MatchOptions): Match {
+    return new Match(host, save.settings, save.cars.map((c) => c.entry), now, opts, save);
+  }
+
+  save(): MatchSave {
+    return {
+      info: this.info,
+      settings: this.settings,
+      total: this.total,
+      phase: this.phase,
+      goAt: this.goAt,
+      loadDeadline: this.loadDeadline,
+      finishDeadline: this.finishDeadline,
+      cars: [...this.cars.values()].map((c) => ({
+        entry: c.entry,
+        s: { ...c.s },
+        num: [c.progress, c.lastD, c.index, c.lat, c.cp, c.lap, c.place, c.points, c.hits, c.credits, c.iceLeft, c.lastShot],
+        finished: c.finished,
+        finishTime: c.finishTime,
+        loaded: c.loaded,
+        status: c.status,
+        shots: [...c.shots],
+      })),
+    };
+  }
+
+  private load(m: MatchSave) {
+    this.phase = m.phase;
+    this.goAt = m.goAt;
+    this.loadDeadline = m.loadDeadline;
+    this.finishDeadline = m.finishDeadline;
+    for (const k of m.cars) {
+      const c = this.cars.get(k.entry.id)!;
+      copyCarState(c.s, k.s);
+      [c.progress, c.lastD, c.index, c.lat, c.cp, c.lap, c.place, c.points, c.hits, c.credits, c.iceLeft, c.lastShot] = k.num;
+      c.finished = k.finished;
+      c.finishTime = k.finishTime;
+      c.loaded = k.loaded;
+      c.status = k.status;
+      c.shots = new Map(k.shots);
+    }
+  }
+
+  /** when something happens by itself next (load timeout, green light, end), or 0 */
+  nextDeadline(): number {
+    if (this.phase === 'loading') return this.loadDeadline + 1;
+    if (this.phase === 'countdown') return this.goAt;
+    if (this.phase !== 'racing') return 0;
+    return this.battle ? this.goAt + this.durationMs : this.finishDeadline;
   }
 
   has(id: number) {
@@ -170,14 +273,18 @@ export class Match {
   }
 
   /** info for a player that (re)joins this match while it is running */
-  resumeInfo(id: number): MatchInfo {
+  resumeInfo(id: number, now?: number): MatchInfo {
     const c = this.cars.get(id);
-    const base = { ...this.info, goAt: this.phase === 'loading' ? undefined : this.goAt };
+    // players who left meanwhile are not put on the track again
+    const roster = this.info.roster.filter((r) => this.cars.has(r.id));
+    const base = { ...this.info, roster, goAt: this.phase === 'loading' ? undefined : this.goAt };
     if (!c) return base;
     // the new page has a new clock: start the time budget over
     c.seq = -1;
     c.ct0 = -1;
     c.offset = Infinity;
+    // a car that kept driving during a short reconnect may have covered that distance
+    if (now !== undefined) c.resumeDt = Math.max(0, (now - c.lastAccept) / 1000);
     return { ...base, resume: { x: c.s.x, z: c.s.z, heading: c.s.heading, progress: c.progress } };
   }
 
@@ -206,6 +313,26 @@ export class Match {
       if (diff === 0 || diff > 0x8000) return;
     }
     c.seq = seq;
+    this.onSample(c, s, now);
+  }
+
+  /** online: several samples of one car, oldest first */
+  onBatch(id: number, view: DataView, now: number) {
+    const c = this.cars.get(id);
+    if (!c || this.phase === 'loading' || this.phase === 'over') return;
+    const head = decodeBatch(view, this.batch);
+    if (!head) return;
+    if (c.seq >= 0) {
+      const diff = (head.seq - c.seq) & 0xffff;
+      if (diff === 0 || diff > 0x8000) return;
+    }
+    c.seq = head.seq;
+    // the newest sample tells how late the message is, so the older ones are not stamped too late
+    c.offset = Math.min(c.offset, now - this.batch[head.count - 1].t);
+    for (let i = 0; i < head.count; i++) this.onSample(c, this.batch[i], now);
+  }
+
+  private onSample(c: MCar, s: CarState, now: number) {
     if (![s.x, s.z, s.y, s.heading, s.speed].every(Number.isFinite) || Math.abs(s.x) > 3000 || Math.abs(s.z) > 3000) {
       this.reject(c, now, 'bad numbers');
       return;
@@ -215,9 +342,10 @@ export class Match {
     if (c.ct0 < 0) {
       c.ct0 = s.t;
       c.st0 = now;
-      c.lastCt = s.t - 1000 / NET.CLIENT_SEND_HZ;
+      c.lastCt = s.t - Math.max(1000 / NET.CLIENT_SEND_HZ, Math.min(1500, c.resumeDt * 1000));
+      c.resumeDt = 0;
     }
-    const ct = Math.min(s.t, c.ct0 + (now - c.st0) + 500);
+    const ct = Math.min(s.t, c.ct0 + (now - c.st0) + (this.opts.slackMs ?? 500));
     const dt = Math.min(1.5, Math.max(0.001, (ct - c.lastCt) / 1000));
     c.offset = Math.min(c.offset, now - s.t);
 
@@ -297,8 +425,16 @@ export class Match {
     // timestamp on the host clock, used by the clients to interpolate
     c.s.t = Math.min(now, ct + c.offset);
     c.lastCt = ct;
+    c.lastAccept = now;
     c.progress += delta;
     c.dirty = true;
+    if (this.opts.queued) {
+      // bounded: a long stall keeps the newest samples
+      if (c.queue.length >= 8) c.queue.shift();
+      const copy = newCarState();
+      copyCarState(copy, c.s);
+      c.queue.push(copy);
+    }
   }
 
   private reject(c: MCar, now: number, reason: string) {
@@ -392,11 +528,14 @@ export class Match {
       const all = [...this.cars.values()];
       if (all.length && all.every((c) => c.loaded)) {
         this.phase = 'countdown';
-        this.goAt = now + NET.COUNTDOWN_MS;
+        this.goAt = now + (this.opts.countdownMs ?? NET.COUNTDOWN_MS);
         this.host.broadcast({ t: 'go', at: this.goAt });
         log.info(`match ${this.id}: all ${all.length} loaded, green light in ${NET.COUNTDOWN_MS} ms`);
       } else if (now > this.loadDeadline || !all.length) {
-        const slow = all.filter((c) => !c.loaded).map((c) => c.entry.name).join(', ');
+        const late = all.filter((c) => !c.loaded);
+        const slow = late.map((c) => c.entry.name).join(', ');
+        // online: whoever is ready starts; the next tick finds everybody loaded
+        if (all.length - late.length >= NET.MIN_PLAYERS && this.host.dropSlow?.(late.map((c) => c.entry.id))) return;
         this.phase = 'over';
         this.host.onEnd(null, { key: 'loadFailed', name: slow });
       }
@@ -423,6 +562,22 @@ export class Match {
   private flushSnapshot(now: number) {
     const list = this.sendList;
     list.length = 0;
+    if (this.opts.queued) {
+      for (const c of this.cars.values()) {
+        if (c.queue.length) {
+          for (const s of c.queue) list.push({ id: c.entry.id, s });
+          c.queue.length = 0;
+        } else if (c.dirty || now - c.lastSent >= NET.KEYFRAME_MS) {
+          // a car that was moved back by a correction, or one that has been silent for a while
+          list.push({ id: c.entry.id, s: c.s });
+        } else continue;
+        c.lastSent = now;
+        c.dirty = false;
+      }
+      const only = list.length && list.every((x) => x.id === list[0].id) ? list[0].id : -1;
+      if (list.length) this.host.broadcastBinary(encodeSnapshot(now, list, list.length), only);
+      return;
+    }
     for (const c of this.cars.values()) {
       if (c.dirty || now - c.lastSent >= NET.KEYFRAME_MS) {
         c.dirty = false;

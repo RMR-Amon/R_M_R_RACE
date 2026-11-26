@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ScreenShell, TopBar } from '../ui';
-import { DEFAULT_SETTINGS, ErrorModal, RoomSettingsForm, matchLabel, playerName, profileFromSave } from './common';
+import { DEFAULT_SETTINGS, ErrorModal, NameField, RejoinBar, RoomSettingsForm, matchLabel, playerName, profileFromSave } from './common';
 import { THEMES, getMap } from '../../data/maps';
 import { GAME_VERSION, NET } from '../../net/config';
 import { createUrl, lanMode, probeHost, roomUrl, rooms, shareAddress, useRooms } from '../../net/lanService';
 import { desktopApi, takeJoinHost, useDesktopLan } from '../../net/desktop';
 import { LanAddress } from './LanAddress';
 import { LanGuide } from './LanGuide';
-import { net, savedSession, useNet } from '../../net/session';
+import OnlineMenu, { OnlineNotConfigured } from './OnlineMenu';
+import { onlineAvailable } from '../../net/online';
+import { net, useNet } from '../../net/session';
 import { t, useLang } from '../../i18n';
 import type { DiscoveredRoom } from '../../net/protocol';
 import type { SaveData } from '../../store/save';
@@ -20,17 +22,24 @@ interface Props {
   onLobby: () => void;
 }
 
-export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props) {
+/** online multiplayer on the website; local network play on pages that came from a LAN server */
+export default function MultiplayerMenu(props: Props) {
+  const [lan, setLan] = useState(false);
+  if (onlineAvailable() && !lan) return <OnlineMenu {...props} onLan={() => setLan(true)} />;
+  return <LanMenu {...props} onBack={lan ? () => setLan(false) : props.onBack} />;
+}
+
+function LanMenu({ save, update, onBack, onLobby }: Props) {
   useLang();
   const [tab, setTab] = useState<'find' | 'create'>('find');
   const view = useNet();
-  const [canRejoin, setCanRejoin] = useState(() => !!savedSession());
   const mode = lanMode();
 
   if (mode === 'unsupported') {
     return (
       <ScreenShell>
         <TopBar title={t('mp.title')} onBack={onBack} />
+        {!onlineAvailable() && <OnlineNotConfigured />}
         <LanGuide />
       </ScreenShell>
     );
@@ -45,42 +54,9 @@ export default function MultiplayerMenu({ save, update, onBack, onLobby }: Props
     <ScreenShell>
       <TopBar title={t('mp.title')} onBack={onBack} right={<ServiceBadge />} />
       <div className="mx-auto max-w-6xl space-y-5 px-4 pb-16 sm:px-8">
-        {canRejoin && (
-          <div className="flex animate-slideUp flex-wrap items-center justify-between gap-3 rounded-2xl bg-sky-500/15 px-4 py-3 ring-1 ring-sky-300/40">
-            <span className="font-bold">🔄 {t('mp.rejoin')}</span>
-            <div className="flex gap-2">
-              <button className="btn-ghost !py-1.5 text-sm" onClick={() => setCanRejoin(false)}>
-                {t('mp.cancel')}
-              </button>
-              <button
-                className="btn-primary !py-1.5 text-sm"
-                onClick={() => {
-                  if (net.resumeSaved()) onLobby();
-                  else setCanRejoin(false);
-                }}
-              >
-                {t('mp.rejoinBtn')}
-              </button>
-            </div>
-          </div>
-        )}
+        <RejoinBar onLobby={onLobby} />
 
-        <section className="panel flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:p-5">
-          <label htmlFor="mp-name" className="text-xs font-bold uppercase tracking-wider text-white/60 sm:w-40">
-            {t('mp.yourName')}
-          </label>
-          <input
-            id="mp-name"
-            value={save.netName}
-            maxLength={16}
-            placeholder={t('mp.defaultName')}
-            onChange={(e) => {
-              const v = e.target.value;
-              update((s) => ({ ...s, netName: v }));
-            }}
-            className="flex-1 rounded-2xl bg-white/10 px-4 py-2.5 font-display text-lg outline-none ring-1 ring-white/15 placeholder:text-white/35 focus:ring-2 focus:ring-pink-400"
-          />
-        </section>
+        <NameField save={save} update={update} />
 
         <LanServerPanel />
 

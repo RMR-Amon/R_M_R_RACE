@@ -5,7 +5,7 @@ import { getCar } from '../../data/cars';
 import { NET } from '../../net/config';
 import { t, type TKey } from '../../i18n';
 import type { Profile, RoomSettings } from '../../net/protocol';
-import type { NetFatal, Notice } from '../../net/session';
+import { net, savedSession, type NetFatal, type Notice } from '../../net/session';
 import type { SaveData } from '../../store/save';
 import type { ThemeId } from '../../game/types';
 
@@ -22,6 +22,52 @@ export const DEFAULT_SETTINGS: RoomSettings = {
 };
 
 export const playerName = (save: SaveData) => save.netName.trim() || t('mp.defaultName');
+
+/** "you were just in a room": offered after a reload or a crash */
+export function RejoinBar({ onLobby }: { onLobby: () => void }) {
+  const [canRejoin, setCanRejoin] = useState(() => !!savedSession());
+  if (!canRejoin) return null;
+  return (
+    <div className="flex animate-slideUp flex-wrap items-center justify-between gap-3 rounded-2xl bg-sky-500/15 px-4 py-3 ring-1 ring-sky-300/40">
+      <span className="font-bold">🔄 {t('mp.rejoin')}</span>
+      <div className="flex gap-2">
+        <button className="btn-ghost !py-1.5 text-sm" onClick={() => setCanRejoin(false)}>
+          {t('mp.cancel')}
+        </button>
+        <button
+          className="btn-primary !py-1.5 text-sm"
+          onClick={() => {
+            if (net.resumeSaved()) onLobby();
+            else setCanRejoin(false);
+          }}
+        >
+          {t('mp.rejoinBtn')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function NameField({ save, update }: { save: SaveData; update: (fn: (s: SaveData) => SaveData) => void }) {
+  return (
+    <section className="panel flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:p-5">
+      <label htmlFor="mp-name" className="text-xs font-bold uppercase tracking-wider text-white/60 sm:w-40">
+        {t('mp.yourName')}
+      </label>
+      <input
+        id="mp-name"
+        value={save.netName}
+        maxLength={16}
+        placeholder={t('mp.defaultName')}
+        onChange={(e) => {
+          const v = e.target.value;
+          update((s) => ({ ...s, netName: v }));
+        }}
+        className="flex-1 rounded-2xl bg-white/10 px-4 py-2.5 font-display text-lg outline-none ring-1 ring-white/15 placeholder:text-white/35 focus:ring-2 focus:ring-pink-400"
+      />
+    </section>
+  );
+}
 
 /** what other players see of us: name, car, paint and driver */
 export function profileFromSave(save: SaveData): Profile {
@@ -138,12 +184,15 @@ export function RoomSettingsForm({
   minPlayers = NET.MIN_PLAYERS,
   disabled = false,
   compact = false,
+  online = false,
 }: {
   value: RoomSettings;
   onChange: (s: RoomSettings) => void;
   minPlayers?: number;
   disabled?: boolean;
   compact?: boolean;
+  /** online rooms are always private (invite code): no access switch */
+  online?: boolean;
 }) {
   const set = (patch: Partial<RoomSettings>) => onChange({ ...value, ...patch });
   return (
@@ -259,6 +308,7 @@ export function RoomSettingsForm({
             ]}
           />
         </section>
+        {!online && (
         <section>
           <Label>{t('mp.access')}</Label>
           <Choice
@@ -271,6 +321,7 @@ export function RoomSettingsForm({
           />
           {value.private && <p className="mt-2 text-xs text-white/55">{t('mp.privateHint')}</p>}
         </section>
+        )}
       </div>
     </fieldset>
   );

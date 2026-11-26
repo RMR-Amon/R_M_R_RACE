@@ -113,7 +113,7 @@ export async function runE2E(origin: string): Promise<number> {
     check('page has no Node access (contextIsolation / sandbox)', (await A.eval<string>('typeof require + typeof process')) === 'undefinedundefined');
 
     // ---- A creates a 1-lap room
-    await A.click('Multiplayer (LAN)');
+    await A.click('Multiplayer');
     await A.waitFor(`!!document.querySelector('#mp-name')`);
     await A.shot('01-mp-desktop.png');
     check('desktop shows the LAN server panel', (await A.text()).includes('LAN server'));
@@ -127,7 +127,7 @@ export async function runE2E(origin: string): Promise<number> {
     check('host is in the lobby of a new room', true);
 
     // ---- B finds it in the LAN list and joins
-    await B.click('Multiplayer (LAN)');
+    await B.click('Multiplayer');
     await B.waitFor(`!!document.querySelector('#mp-name')`);
     await B.type('#mp-name', 'Bob');
     await B.waitFor(`document.body.textContent.includes("Alice's room")`, 10000, 'room listed');

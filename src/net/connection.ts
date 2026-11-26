@@ -5,8 +5,12 @@
  *  - clock sync: every pong gives a (round trip, server time) sample, the sample with the smallest
  *    round trip wins, so `serverNow()` is accurate to a few milliseconds on a LAN;
  *  - automatic reconnection for RECONNECT_GRACE_MS with a "resume" hello (session token).
+ *
+ * Online rooms (`online`) use the same logic with other numbers. Liveness and round trip come from a
+ * raw "ping" that the platform answers without waking the room; the clock is synchronised with a few
+ * JSON pings after connecting and one every CLOCK_MS.
  */
-import { NET } from './config';
+import { NET, ONLINE, WS_PING, WS_PONG } from './config';
 import type { ClientMsg, ServerMsg } from './protocol';
 
 export type ConnState = 'connecting' | 'open' | 'reconnecting' | 'closed';
@@ -40,15 +44,19 @@ export class Connection {
   /** set once the server accepted us (only then is a dropped socket worth resuming) */
   private established = false;
   private ended = false;
+  private rawAt = 0;
+  private clockTimer = 0;
+  private clockLeft = 0;
 
   constructor(
     readonly url: string,
     private readonly h: ConnHandlers,
     /** first hello, and the hello used when reconnecting (null = cannot resume) */
     private readonly hello: (resume: boolean) => ClientMsg | null,
+    readonly online = false,
   ) {
     this.open();
-    this.timer = window.setInterval(this.beat, NET.PING_MS);
+    this.timer = window.setInterval(this.beat, online ? ONLINE.PING_MS : NET.PING_MS);
   }
 
   /** the host accepted the session (welcome received) */
@@ -77,6 +85,7 @@ export class Connection {
     clearInterval(this.timer);
     clearTimeout(this.retryTimer);
     clearTimeout(this.attemptTimer);
+    clearTimeout(this.clockTimer);
     const ws = this.ws;
     this.ws = null;
     if (ws) {
@@ -113,15 +122,25 @@ export class Connection {
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     clearTimeout(this.attemptTimer);
-    this.attemptTimer = window.setTimeout(() => this.drop(ws), NET.CONNECT_TIMEOUT_MS);
+    this.attemptTimer = window.setTimeout(() => this.drop(ws), this.online ? ONLINE.CONNECT_TIMEOUT_MS : NET.CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
       this.lastHeard = performance.now();
       ws.send(JSON.stringify(hello));
       this.ping();
+      if (this.online) {
+        this.rawPing(ws);
+        this.clockLeft = 4;
+        this.clock();
+      }
     };
     ws.onmessage = (ev) => {
       this.lastHeard = performance.now();
       if (typeof ev.data === 'string') {
+        if (ev.data === WS_PONG) {
+          if (this.rawAt) this.rtt = Math.round(performance.now() - this.rawAt);
+          this.rawAt = 0;
+          return;
+        }
         let msg: ServerMsg;
         try {
           msg = JSON.parse(ev.data);
@@ -159,7 +178,7 @@ export class Connection {
     } else {
       if (this.state !== 'reconnecting') this.dropAt = now;
       this.setState('reconnecting');
-      if (now - this.dropAt > NET.RECONNECT_GRACE_MS) return this.finish('lost');
+      if (now - this.dropAt > (this.online ? ONLINE.RECONNECT_GRACE_MS : NET.RECONNECT_GRACE_MS)) return this.finish('lost');
     }
     const wait = BACKOFF[Math.min(this.attempt, BACKOFF.length - 1)];
     this.attempt++;
@@ -193,13 +212,29 @@ export class Connection {
   private beat = () => {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (performance.now() - this.lastHeard > NET.DEAD_AFTER_MS) {
+    if (performance.now() - this.lastHeard > (this.online ? ONLINE.DEAD_AFTER_MS : NET.DEAD_AFTER_MS)) {
       // silent socket (Wi-Fi off, host gone): drop it and go through the reconnect logic
       this.drop(ws);
       return;
     }
-    this.ping();
+    if (this.online) this.rawPing(ws);
+    else this.ping();
   };
+
+  private rawPing(ws: WebSocket) {
+    this.rawAt = performance.now();
+    ws.send(WS_PING);
+  }
+
+  /** online: a quick series after connecting, then rarely (these messages count against the quota) */
+  private clock() {
+    clearTimeout(this.clockTimer);
+    this.clockTimer = window.setTimeout(() => {
+      if (this.ended || this.ws?.readyState !== WebSocket.OPEN) return;
+      this.ping();
+      this.clock();
+    }, this.clockLeft-- > 0 ? 350 : ONLINE.CLOCK_MS);
+  }
 
   private ping() {
     this.send({ t: 'ping', c: performance.now(), rtt: this.rtt });
@@ -209,7 +244,7 @@ export class Connection {
     const now = performance.now();
     const rtt = now - c;
     if (!(rtt >= 0) || rtt > 10000) return;
-    this.rtt = Math.round(rtt);
+    if (!this.online) this.rtt = Math.round(rtt);
     this.samples.push({ rtt, off: s + rtt / 2 - now });
     if (this.samples.length > 12) this.samples.shift();
     let best = this.samples[0];

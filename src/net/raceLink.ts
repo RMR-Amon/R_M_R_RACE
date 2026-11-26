@@ -5,10 +5,18 @@
  * authoritative standings, pushes its own car state and item / hit events, and drains a queue of
  * incoming events once per frame. The network code never reaches into the engine.
  */
-import { NET } from './config';
-import type { Connection } from './connection';
-import { decodeSnapshot, newCarState, type CarState, type HitKind, type ItemEvent, type MatchInfo, type StandingInfo } from './protocol';
-import { LocalSender, RemoteBuffer } from './sync';
+import { NET, ONLINE } from './config';
+import { decodeSnapshot, newCarState, type CarState, type ClientMsg, type HitKind, type ItemEvent, type MatchInfo, type StandingInfo } from './protocol';
+import { BatchSender, LocalSender, RemoteBuffer } from './sync';
+
+/** what the race needs from the connection (see connection.ts) */
+export interface RaceConn {
+  readonly rtt: number;
+  readonly state: 'connecting' | 'open' | 'reconnecting' | 'closed';
+  serverNow(): number;
+  send(msg: ClientMsg): void;
+  sendBinary(buf: ArrayBuffer): void;
+}
 
 export type RaceEvent =
   | { k: 'item'; from: number; e: ItemEvent }
@@ -23,7 +31,12 @@ export class RaceLink {
   /** bumped on every standings update */
   standingsVersion = 0;
   private readonly remotes = new Map<number, RemoteBuffer>();
-  private readonly sender = new LocalSender();
+  private readonly sender: LocalSender | BatchSender;
+  /** how far in the past remote cars are drawn; online it follows the measured network */
+  private delay: number = NET.INTERP_DELAY_MS;
+  private lateAvg = -1;
+  private lateDev = 0;
+  private delayAt = performance.now();
   private readonly scratch = newCarState();
   private events: RaceEvent[] = [];
   private shot = 0;
@@ -41,9 +54,10 @@ export class RaceLink {
   constructor(
     readonly info: MatchInfo,
     readonly localId: number,
-    private readonly conn: Connection,
+    private readonly conn: RaceConn,
     private readonly nextN: () => number,
   ) {
+    this.sender = info.net ? new BatchSender(info.net.sampleHz, info.net.sendHz, ONLINE.MAX_BATCH) : new LocalSender();
     for (const r of info.roster) if (r.id !== localId) this.remotes.set(r.id, new RemoteBuffer());
     if (info.goAt !== undefined) this.goAt = info.goAt;
   }
@@ -72,7 +86,55 @@ export class RaceLink {
 
   onSnapshot(view: DataView) {
     this.rxCount++;
-    decodeSnapshot(view, this.scratch, (id, s) => this.remotes.get(id)?.push(s));
+    if (!this.info.net) {
+      decodeSnapshot(view, this.scratch, (id, s) => this.remotes.get(id)?.push(s));
+      return;
+    }
+    const now = this.now();
+    let newest = -Infinity;
+    decodeSnapshot(view, this.scratch, (id, s) => {
+      const b = this.remotes.get(id);
+      if (!b) return;
+      // repeated keyframes carry an old timestamp: they say nothing about the network
+      if (s.t > b.newest && s.t > newest) newest = s.t;
+      b.push(s);
+    });
+    if (newest > -Infinity) this.measure(now - newest);
+  }
+
+  /** lateness of a fresh sample (transit + jitter): running average and mean deviation */
+  private measure(late: number) {
+    if (late < -200 || late > 2000) return;
+    if (this.lateAvg < 0) {
+      this.lateAvg = Math.max(0, late);
+      this.lateDev = 20;
+      this.delay = this.target();
+      return;
+    }
+    const d = late - this.lateAvg;
+    this.lateAvg += d * 0.08;
+    this.lateDev += (Math.abs(d) - this.lateDev) * 0.08;
+  }
+
+  /** the next message must normally arrive before the drawn moment catches up with the newest sample */
+  private target() {
+    const gap = 1000 / (this.info.net?.sendHz ?? NET.SNAPSHOT_HZ);
+    return Math.min(ONLINE.INTERP_MAX_MS, Math.max(ONLINE.INTERP_MIN_MS, this.lateAvg + gap + this.lateDev * 3 + 10));
+  }
+
+  /** moves the delay slowly, so cars never visibly jump: 8 % faster / 5 % slower playback at most */
+  private tickDelay() {
+    const now = performance.now();
+    const dt = Math.min(100, now - this.delayAt);
+    this.delayAt = now;
+    if (!this.info.net || this.lateAvg < 0) return;
+    const d = this.target() - this.delay;
+    this.delay += Math.max(-0.05 * dt, Math.min(0.08 * dt, d));
+  }
+
+  /** current interpolation delay in ms (monitoring / tests) */
+  get interpDelay() {
+    return Math.round(this.delay);
   }
 
   onStandings(rows: StandingInfo[]) {
@@ -97,7 +159,7 @@ export class RaceLink {
   /** interpolated state of a remote car at "now − INTERP_DELAY" */
   sampleRemote(id: number, out: CarState): boolean {
     const b = this.remotes.get(id);
-    return !!b && b.sample(this.now() - NET.INTERP_DELAY_MS, out);
+    return !!b && b.sample(this.now() - this.delay, out);
   }
 
   /** hands all events received since the last call to the engine */
@@ -112,6 +174,7 @@ export class RaceLink {
   pushLocal(s: CarState): boolean {
     const buf = this.sender.next(s, performance.now());
     this.tickStats();
+    this.tickDelay();
     if (!buf) return false;
     this.conn.sendBinary(buf);
     this.txCount++;

@@ -7,7 +7,7 @@
  *
  * Nothing in here touches the DOM or Node APIs, so both sides import the same code.
  */
-import { NET } from './config';
+import { NET, ONLINE } from './config';
 import type { Accessory, DriverLook, ItemType, Paint, ThemeId } from '../game/types';
 
 // ============================================================================ shared types
@@ -53,9 +53,18 @@ export interface RoomState {
   status: RoomStatus;
   hostId: number;
   players: PlayerInfo[];
-  /** only sent to the host of a private room */
+  /** LAN: only sent to the host of a private room; online: the invite code, sent to everybody */
   code?: string;
+  /** online rooms only */
+  kind?: RoomKind;
+  /** quick play: the race starts by itself at this time (server clock) */
+  startAt?: number;
+  /** quick play: players needed */
+  min?: number;
 }
+
+/** online rooms: found by Quick Play / joined with an invite code */
+export type RoomKind = 'quick' | 'private';
 
 /** a room as it appears in the LAN room list */
 export interface RoomListing {
@@ -126,6 +135,8 @@ export interface MatchInfo {
   /** set when (re)joining a match that is already running */
   goAt?: number;
   resume?: { x: number; z: number; heading: number; progress: number };
+  /** online: how cars are sent (samples per second, messages per second) */
+  net?: { sampleHz: number; sendHz: number };
 }
 
 export interface StandingInfo {
@@ -178,7 +189,8 @@ export interface ItemEvent {
 export type ClientMsg =
   | { t: 'hello'; game: string; proto: number; ver: string; join: 'create'; settings: RoomSettings; profile: Profile }
   | { t: 'hello'; game: string; proto: number; ver: string; join: 'join'; roomId: string; code?: string; profile: Profile }
-  | { t: 'hello'; game: string; proto: number; ver: string; join: 'resume'; roomId: string; token: string }
+  | { t: 'hello'; game: string; proto: number; ver: string; join: 'resume'; roomId: string; token: string; match?: string }
+  | { t: 'hello'; game: string; proto: number; ver: string; join: 'ticket'; roomId: string; ticket: string; profile: Profile }
   | { t: 'ping'; c: number; rtt?: number }
   | { t: 'settings'; n: number; s: RoomSettings }
   | { t: 'profile'; n: number; p: Profile }
@@ -187,6 +199,8 @@ export type ClientMsg =
   | { t: 'start'; n: number }
   | { t: 'close'; n: number }
   | { t: 'leave' }
+  /** online: the results were seen, the player is back in the lobby */
+  | { t: 'back'; n: number }
   | { t: 'loaded'; n: number }
   | { t: 'item'; n: number; e: ItemEvent }
   | { t: 'hit'; n: number; owner: number; shot: number; kind: HitKind };
@@ -198,7 +212,7 @@ export type ServerMsg =
   | { t: 'room'; room: RoomState }
   | { t: 'notice'; key: NoticeKey; name?: string }
   | { t: 'kicked' }
-  | { t: 'closed'; reason: 'host' | 'shutdown' }
+  | { t: 'closed'; reason: 'host' | 'shutdown' | 'idle' }
   | { t: 'load'; match: MatchInfo }
   | { t: 'abort'; key: NoticeKey; name?: string }
   | { t: 'go'; at: number }
@@ -223,14 +237,52 @@ export type ErrorCode =
   | 'badPing'
   | 'rateLimit'
   | 'sessionExpired'
-  | 'serverFull';
+  | 'serverFull'
+  // online only
+  | 'serviceLimit'
+  | 'serverError'
+  | 'badOrigin'
+  | 'replaced'
+  | 'afk'
+  | 'badCode'
+  | 'searchTimeout';
 
-export type NoticeKey = 'joined' | 'left' | 'dropped' | 'back' | 'newHost' | 'loadFailed' | 'kickedOther';
+export type NoticeKey = 'joined' | 'left' | 'dropped' | 'back' | 'newHost' | 'loadFailed' | 'kickedOther' | 'matchLost' | 'serviceLimit';
+
+// ============================================================================ online matchmaking
+
+/** browser → matchmaking service */
+export type MmClientMsg =
+  /** pid: a random secret of this browser; one player can only be in one queue / room */
+  | { t: 'hello'; game: string; proto: number; pid: string }
+  | { t: 'find' }
+  | { t: 'cancel' }
+  | { t: 'create'; settings: RoomSettings }
+  | { t: 'join'; code: string };
+
+export type MmServerMsg =
+  | { t: 'status'; online: number; searching: number; min: number; max: number }
+  | { t: 'searching' }
+  | { t: 'cancelled' }
+  /** a seat is reserved: open /room/<roomId> and say hello with the ticket */
+  | { t: 'match'; roomId: string; ticket: string }
+  | { t: 'error'; code: ErrorCode };
+
+/** invite codes: no easily confused characters */
+export const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export const CODE_LENGTH = 6;
+export const cleanCode = (v: unknown): string | null => {
+  if (typeof v !== 'string') return null;
+  const s = v.toUpperCase().replace(/[\s-]/g, '');
+  return s.length === CODE_LENGTH && [...s].every((c) => CODE_ALPHABET.includes(c)) ? s : null;
+};
 
 // ============================================================================ binary car state
 
 export const BIN_STATE = 1;
 export const BIN_SNAPSHOT = 2;
+/** online: several consecutive samples of one car in a single message */
+export const BIN_BATCH = 3;
 
 /** flags (byte 1) */
 export const F_THROTTLE = 1;
@@ -353,6 +405,37 @@ export function decodeState(v: DataView, out: CarState): number {
   out.t = v.getUint32(3, true);
   readBody(v, 7, out);
   return v.getUint16(1, true);
+}
+
+/** client → room: type u8, seq u16, count u8, then (time u32, body) per sample */
+const BATCH_ENTRY = 4 + BODY;
+export const batchBytes = (n: number) => 4 + n * BATCH_ENTRY;
+
+export function encodeBatch(seq: number, samples: readonly CarState[], count: number): ArrayBuffer {
+  const buf = new ArrayBuffer(batchBytes(count));
+  const v = new DataView(buf);
+  v.setUint8(0, BIN_BATCH);
+  v.setUint16(1, seq & 0xffff, true);
+  v.setUint8(3, count);
+  for (let i = 0; i < count; i++) {
+    const o = 4 + i * BATCH_ENTRY;
+    v.setUint32(o, Math.max(0, Math.round(samples[i].t)) >>> 0, true);
+    writeBody(v, o + 4, samples[i]);
+  }
+  return buf;
+}
+
+/** reads a batch into `out` (reused objects); null when the frame is malformed */
+export function decodeBatch(v: DataView, out: CarState[]): { seq: number; count: number } | null {
+  if (v.byteLength < 4 || v.getUint8(0) !== BIN_BATCH) return null;
+  const count = v.getUint8(3);
+  if (count < 1 || count > ONLINE.MAX_BATCH || v.byteLength !== batchBytes(count)) return null;
+  for (let i = 0; i < count; i++) {
+    const o = 4 + i * BATCH_ENTRY;
+    out[i].t = v.getUint32(o, true);
+    readBody(v, o + 4, out[i]);
+  }
+  return { seq: v.getUint16(1, true), count };
 }
 
 /** host → clients: every car that changed since the previous snapshot */

@@ -4,12 +4,12 @@
  * server messages into UI phases; during a match it feeds the RaceLink used by the engine.
  */
 import { useSyncExternalStore } from 'react';
-import { GAME_ID, GAME_VERSION, NET, PROTOCOL_VERSION } from './config';
+import { GAME_ID, GAME_VERSION, NET, ONLINE, ONLINE_PROTOCOL, PROTOCOL_VERSION } from './config';
 import { Connection, type ConnState } from './connection';
 import type { ClientMsg, ErrorCode, MatchInfo, NoticeKey, Profile, ResultInfo, RoomSettings, RoomState, ServerMsg } from './protocol';
 import { RaceLink } from './raceLink';
 
-export type NetFatal = ErrorCode | 'unreachable' | 'lost' | 'kicked' | 'hostClosed' | 'shutdown';
+export type NetFatal = ErrorCode | 'unreachable' | 'lost' | 'kicked' | 'hostClosed' | 'shutdown' | 'idle' | 'onlineLost' | 'onlineUnreachable' | 'onlineVersion';
 
 export interface Notice {
   id: number;
@@ -38,6 +38,8 @@ export interface NetView {
   results: ResultsView | null;
   /** increases with every match the session loads */
   raceKey: number;
+  /** a room of the online service (false: LAN) */
+  online: boolean;
 }
 
 const IDLE: NetView = {
@@ -52,10 +54,11 @@ const IDLE: NetView = {
   match: null,
   results: null,
   raceKey: 0,
+  online: false,
 };
 
 /** errors that end the session (the rest are lobby warnings) */
-const FATAL: ErrorCode[] = ['version', 'roomNotFound', 'roomFull', 'inProgress', 'wrongCode', 'kicked', 'sessionExpired', 'serverFull'];
+const FATAL: ErrorCode[] = ['version', 'roomNotFound', 'roomFull', 'inProgress', 'wrongCode', 'kicked', 'sessionExpired', 'serverFull', 'serviceLimit', 'serverError', 'badOrigin', 'replaced', 'afk'];
 
 const STORE_KEY = 'rmr-lan-session';
 
@@ -64,6 +67,7 @@ interface Saved {
   roomId: string;
   token: string;
   at: number;
+  online?: boolean;
 }
 
 export function savedSession(): Saved | null {
@@ -72,7 +76,7 @@ export function savedSession(): Saved | null {
     if (!raw) return null;
     const s = JSON.parse(raw) as Saved;
     // the host only keeps a dropped slot for RECONNECT_GRACE_MS
-    if (!s || typeof s.token !== 'string' || Date.now() - s.at > NET.RECONNECT_GRACE_MS) {
+    if (!s || typeof s.token !== 'string' || Date.now() - s.at > (s.online ? ONLINE.RECONNECT_GRACE_MS : NET.RECONNECT_GRACE_MS)) {
       sessionStorage.removeItem(STORE_KEY);
       return null;
     }
@@ -88,6 +92,7 @@ class NetSession {
   private conn: Connection | null = null;
   private token: string | null = null;
   private roomId: string | null = null;
+  private online = false;
   private n = 0;
   private noticeId = 0;
   private saveTimer = 0;
@@ -131,25 +136,46 @@ class NetSession {
     );
   }
 
+  /** online: take the seat the matchmaking service reserved */
+  joinTicket(url: string, roomId: string, ticket: string, profile: Profile) {
+    this.begin(
+      url,
+      roomId,
+      (resume) =>
+        resume ? this.resumeHello() : { t: 'hello', game: GAME_ID, proto: ONLINE_PROTOCOL, ver: GAME_VERSION, join: 'ticket', roomId, ticket, profile },
+      null,
+      true,
+    );
+  }
+
+  /** server clock (ms); 0 without a session */
+  serverNow() {
+    return this.conn?.serverNow() ?? 0;
+  }
+
   /** rejoin after a page reload (token kept in sessionStorage) */
   resumeSaved(): boolean {
     const s = savedSession();
     if (!s) return false;
-    this.begin(s.url, s.roomId, () => this.resumeHello(), s.token);
+    this.begin(s.url, s.roomId, () => this.resumeHello(), s.token, !!s.online);
     return true;
   }
 
   private resumeHello(): ClientMsg | null {
     if (!this.token || !this.roomId) return null;
-    return { t: 'hello', game: GAME_ID, proto: PROTOCOL_VERSION, ver: GAME_VERSION, join: 'resume', roomId: this.roomId, token: this.token };
+    const proto = this.online ? ONLINE_PROTOCOL : PROTOCOL_VERSION;
+    // the race this page is showing: if it ended meanwhile, the room sends its results
+    const match = this.online && this.link ? this.link.info.id : undefined;
+    return { t: 'hello', game: GAME_ID, proto, ver: GAME_VERSION, join: 'resume', roomId: this.roomId, token: this.token, match };
   }
 
-  private begin(url: string, roomId: string | null, hello: (resume: boolean) => ClientMsg | null, token: string | null = null) {
+  private begin(url: string, roomId: string | null, hello: (resume: boolean) => ClientMsg | null, token: string | null = null, online = false) {
     this.teardown();
+    this.online = online;
     this.token = token;
     this.roomId = roomId;
     this.n = 0;
-    this.v = { ...IDLE, phase: 'connecting', conn: 'connecting', raceKey: this.v.raceKey };
+    this.v = { ...IDLE, phase: 'connecting', conn: 'connecting', raceKey: this.v.raceKey, online };
     this.set({});
     // callbacks of an old connection that is still closing must not touch the new session
     let conn: Connection | null = null;
@@ -164,9 +190,10 @@ class NetSession {
           this.set({ conn: s });
           if (s === 'open') this.save();
         },
-        onClosed: (reason) => mine() && this.end(reason === 'normal' ? 'lost' : reason),
+        onClosed: (reason) => mine() && this.end(online ? (reason === 'unreachable' ? 'onlineUnreachable' : 'onlineLost') : reason === 'normal' ? 'lost' : reason),
       },
       hello,
+      online,
     );
     this.conn = conn;
     // keep the saved session fresh while connected (used to resume after a page reload)
@@ -179,7 +206,7 @@ class NetSession {
   private save() {
     if (!this.token || !this.roomId || !this.conn || this.conn.state !== 'open') return;
     try {
-      sessionStorage.setItem(STORE_KEY, JSON.stringify({ url: this.conn.url, roomId: this.roomId, token: this.token, at: Date.now() } satisfies Saved));
+      sessionStorage.setItem(STORE_KEY, JSON.stringify({ url: this.conn.url, roomId: this.roomId, token: this.token, at: Date.now(), online: this.online } satisfies Saved));
     } catch {
       /* storage blocked */
     }
@@ -209,6 +236,12 @@ class NetSession {
         this.save();
         return;
       case 'error':
+        // the room object is restarting: the connection tries again by itself
+        if (m.code === 'serverError' && this.online && this.token) return;
+        if (m.code === 'version' && this.online) {
+          this.end('onlineVersion');
+          return;
+        }
         if (FATAL.includes(m.code) || !this.token) {
           this.end(m.code, m.detail);
           return;
@@ -225,11 +258,15 @@ class NetSession {
         this.end('kicked');
         return;
       case 'closed':
-        this.end(m.reason === 'host' ? 'hostClosed' : 'shutdown');
+        this.end(m.reason === 'host' ? 'hostClosed' : m.reason);
         return;
       case 'load': {
         // a reconnect in the middle of the same match keeps the running race
-        if (this.link && this.link.info.id === m.match.id && !this.link.disposed) return;
+        if (this.link && this.link.info.id === m.match.id && !this.link.disposed) {
+          // players who left while we were disconnected
+          for (const r of this.link.info.roster) if (!m.match.roster.some((x) => x.id === r.id)) this.link.queue({ k: 'left', id: r.id });
+          return;
+        }
         if (!this.conn) return;
         this.link = new RaceLink(m.match, this.v.you, this.conn, this.nextN);
         this.set({ match: m.match, phase: 'race', results: null, raceKey: this.v.raceKey + 1 });
@@ -309,7 +346,9 @@ class NetSession {
 
   /** results seen: back into the lobby of the same room */
   backToLobby() {
-    if (this.v.phase === 'results') this.set({ phase: 'lobby', results: null });
+    if (this.v.phase !== 'results') return;
+    this.set({ phase: 'lobby', results: null });
+    if (this.online) this.cmd((n) => ({ t: 'back', n }));
   }
 
   /** a fatal error was shown: back to idle */

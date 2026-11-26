@@ -1,0 +1,75 @@
+# R_M_R Race online multiplayer — Cloudflare Workers + Durable Objects (Workers FREE plan).
+# Only SQLite-backed Durable Objects are used; there are no paid bindings. Nothing secret lives here.
+name = "rmr-race-online"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+send_metrics = false
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "MATCHMAKER"
+class_name = "Matchmaker"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "GameRoom"
+
+# SQLite storage (the only Durable Object storage of the Free plan)
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Matchmaker", "GameRoom"]
+
+# ---------------------------------------------------------------------------- production
+[vars]
+# websites that may connect (comma separated, exact origins; no wildcards)
+ALLOWED_ORIGINS = "https://r-m-r-race.netlify.app"
+MIN_PLAYERS = "2"
+# the game supports at most 8 cars; larger values are ignored
+MAX_PLAYERS = "8"
+# seconds a player may wait in the Quick Play queue
+MATCHMAKING_TIMEOUT = "120"
+# seconds without any activity after which a lobby is closed
+ROOM_TIMEOUT = "600"
+# seconds from "everybody loaded" to the green light
+COUNTDOWN_DURATION = "4"
+# Quick Play: seconds from "enough players" to the automatic start
+LOBBY_COUNTDOWN = "20"
+# messages per second each car sends (the main cost: 20 incoming messages = 1 billed request)
+SEND_HZ = "10"
+# car positions per second inside those messages (smoothness; does not cost requests)
+SAMPLE_HZ = "20"
+# protection against abuse and against burning the daily free quota
+MAX_OPEN_ROOMS = "60"
+MAX_ROOMS_PER_DAY = "600"
+# tools for the automatic tests; never enable in production
+DEBUG = "0"
+
+# ---------------------------------------------------------------------------- local development
+[env.dev]
+name = "rmr-race-online-dev"
+
+[[env.dev.durable_objects.bindings]]
+name = "MATCHMAKER"
+class_name = "Matchmaker"
+
+[[env.dev.durable_objects.bindings]]
+name = "ROOMS"
+class_name = "GameRoom"
+
+[[env.dev.migrations]]
+tag = "v1"
+new_sqlite_classes = ["Matchmaker", "GameRoom"]
+
+[env.dev.vars]
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+MIN_PLAYERS = "2"
+MAX_PLAYERS = "8"
+MATCHMAKING_TIMEOUT = "120"
+ROOM_TIMEOUT = "600"
+COUNTDOWN_DURATION = "4"
+LOBBY_COUNTDOWN = "20"
+SEND_HZ = "10"
+SAMPLE_HZ = "20"
+MAX_OPEN_ROOMS = "60"
+MAX_ROOMS_PER_DAY = "600"
+DEBUG = "1"

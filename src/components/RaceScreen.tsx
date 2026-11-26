@@ -221,7 +221,7 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
       )}
       {hud && <Toast text={hud.message} id={hud.messageId} />}
 
-      {/* -------- LAN: waiting for the other players to load / connection trouble */}
+      {/* -------- multiplayer: waiting for the other players to load / connection trouble */}
       {netHud?.waiting && hud?.phase === 'countdown' && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
           <span className="animate-pulse rounded-2xl bg-black/55 px-5 py-3 text-center font-display text-xl text-white ring-1 ring-white/20 backdrop-blur sm:text-3xl">

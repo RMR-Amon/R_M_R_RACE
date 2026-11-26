@@ -2,7 +2,8 @@
 const LEVELS = { silent: 0, error: 1, warn: 2, info: 3, debug: 4 } as const;
 type Level = keyof typeof LEVELS;
 
-const envLevel = (process.env.RMR_LOG ?? 'info') as Level;
+// the same code also runs on Cloudflare Workers, where there is no process.env
+const envLevel = ((typeof process !== 'undefined' && process.env?.RMR_LOG) || 'info') as Level;
 let level: number = LEVELS[envLevel] ?? LEVELS.info;
 
 export function setLogLevel(l: Level) {

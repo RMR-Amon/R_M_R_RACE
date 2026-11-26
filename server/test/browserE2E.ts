@@ -10,169 +10,28 @@
  *
  * All on one computer: this does not prove that a particular Wi-Fi / firewall lets devices talk.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import WebSocket from 'ws';
 import { launchServer } from '../launch';
 import { setLogLevel } from '../log';
+import { Page, errors, launchBrowser, listeners, outside, send, sleep, sockets } from './cdp';
 import { primaryAddress } from '../netInfo';
 
 setLogLevel((process.env.RMR_LOG as 'info') ?? 'error');
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const distDir = path.join(root, 'dist');
-const OUT = process.env.RMR_E2E_OUT;
 const P1 = 47960;
 const P2 = 47970;
 const UDP = 47961;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const results: { name: string; ok: boolean }[] = [];
 const check = (name: string, ok: boolean, info = '') => {
   results.push({ name, ok });
   console.log(`${ok ? '  ✔' : '  ✘'} ${name}${info ? ` — ${info}` : ''}`);
 };
 
-function findBrowser(): string | null {
-  const env = process.env.CHROME_PATH;
-  const pf = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA].filter(Boolean) as string[];
-  const list = [
-    ...(env ? [env] : []),
-    ...pf.map((p) => path.join(p, 'Google/Chrome/Application/chrome.exe')),
-    ...pf.map((p) => path.join(p, 'Microsoft/Edge/Application/msedge.exe')),
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-  ];
-  return list.find((f) => fs.existsSync(f)) ?? null;
-}
-
-// ------------------------------------------------------------------------------------------ DevTools protocol
-interface CdpMsg {
-  id?: number;
-  method?: string;
-  sessionId?: string;
-  params?: Record<string, never>;
-  result?: Record<string, never>;
-  error?: { message: string };
-}
-let cdp: WebSocket;
-let nextId = 0;
-const pending = new Map<number, (m: CdpMsg) => void>();
-const listeners: ((m: CdpMsg) => void)[] = [];
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const id = ++nextId;
-    pending.set(id, (m) => (m.error ? reject(new Error(`${method}: ${m.error.message}`)) : resolve(m.result)));
-    cdp.send(JSON.stringify({ id, method, params, sessionId }));
-  });
-}
-
-const errors: string[] = [];
-const outside: string[] = [];
-const sockets: string[] = [];
-
-class Page {
-  constructor(
-    readonly name: string,
-    readonly session: string,
-  ) {}
-  static async open(name: string, url: string, prepare?: (p: Page) => Promise<void>): Promise<Page> {
-    // own browser context = own storage, like another device
-    const { browserContextId } = await send('Target.createBrowserContext');
-    const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId, newWindow: true, width: 1280, height: 760 });
-    const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
-    const p = new Page(name, sessionId);
-    listeners.push((m) => {
-      if (m.sessionId !== sessionId) return;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const a = m.params as any;
-      if (m.method === 'Runtime.exceptionThrown') errors.push(`${name}: ${a.exceptionDetails.exception?.description ?? a.exceptionDetails.text}`);
-      if (m.method === 'Runtime.consoleAPICalled' && a.type === 'error') errors.push(`${name}: ${a.args.map((x: { value?: string; description?: string }) => x.value ?? x.description).join(' ')}`.slice(0, 300));
-      if (m.method === 'Network.requestWillBeSent' && /^https?:/.test(a.request.url)) {
-        const h = new URL(a.request.url).hostname;
-        if (h !== 'localhost' && !/^(127|10|192\.168|172|169\.254|100)\./.test(h) && h !== 'r-m-r-race.netlify.app') outside.push(a.request.url);
-      }
-      if (m.method === 'Network.webSocketCreated') sockets.push(`${name} ${a.url}`);
-    });
-    for (const d of ['Runtime', 'Page', 'Network']) await send(`${d}.enable`, {}, sessionId);
-    await send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId);
-    if (prepare) await prepare(p);
-    await p.goto(url);
-    return p;
-  }
-  goto(url: string) {
-    return send('Page.navigate', { url }, this.session);
-  }
-  async eval<T = unknown>(expression: string): Promise<T> {
-    const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: true }, this.session);
-    if (r.exceptionDetails) throw new Error(`${this.name}: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
-    return r.result.value as T;
-  }
-  async waitFor(js: string, ms = 15000, what = js) {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      try {
-        if (await this.eval(js)) return;
-      } catch {
-        /* page is loading */
-      }
-      await sleep(120);
-    }
-    throw new Error(`${this.name}: timeout waiting for ${what}`);
-  }
-  waitText(text: string, ms = 15000) {
-    return this.waitFor(`!!document.body && document.body.textContent.includes(${JSON.stringify(text)})`, ms, `"${text}"`);
-  }
-  waitGone(text: string, ms = 15000) {
-    return this.waitFor(`!!document.body && !document.body.textContent.includes(${JSON.stringify(text)})`, ms, `"${text}" to disappear`);
-  }
-  has(text: string) {
-    return this.eval<boolean>(`document.body.textContent.includes(${JSON.stringify(text)})`);
-  }
-  hasButton(text: string) {
-    return this.eval<boolean>(`[...document.querySelectorAll('button')].some(b => b.textContent.includes(${JSON.stringify(text)}))`);
-  }
-  async click(text: string, scope = 'document') {
-    await this.waitFor(
-      `(() => { const b = [...${scope}.querySelectorAll('button')].find(b => b.textContent.trim().includes(${JSON.stringify(text)}) && !b.disabled); if (!b) return false; b.click(); return true; })()`,
-      8000,
-      `enabled button "${text}"`,
-    );
-  }
-  type(selector: string, value: string) {
-    return this.eval(
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event('input', { bubbles: true })); })()`,
-    );
-  }
-  key(type: 'keyDown' | 'keyUp', code: string) {
-    return send('Input.dispatchKeyEvent', { type, code, key: code, windowsVirtualKeyCode: code === 'ArrowUp' ? 38 : 0 }, this.session);
-  }
-  async shot(file: string) {
-    if (!OUT) return;
-    fs.mkdirSync(OUT, { recursive: true });
-    const r = await send('Page.captureScreenshot', { format: 'png' }, this.session);
-    fs.writeFileSync(path.join(OUT, file), Buffer.from(r.data, 'base64'));
-  }
-  racers() {
-    return this.eval<{ id: number; remote: boolean; x: number; z: number; speed: number; offline: boolean }[]>(
-      `window.__game.racers.map(r => ({ id: r.netId, remote: r.remote, x: r.x, z: r.z, speed: r.speed, offline: r.offline }))`,
-    );
-  }
-  /** lighter graphics: three 3D windows share one computer */
-  async lowGraphics() {
-    await this.click('⚙️');
-    await this.click('Low');
-    await this.click('Close');
-  }
-}
-
 async function main() {
-  const exe = findBrowser();
-  if (!exe) throw new Error('Chrome / Edge not found (set CHROME_PATH)');
   if (!fs.existsSync(path.join(distDir, 'index.html'))) throw new Error('run "npm run build" first');
   const ip = primaryAddress();
   if (!ip) throw new Error('no LAN interface: connect to a network');
@@ -180,46 +39,21 @@ async function main() {
 
   let s1 = await open(P1);
   const s2 = await open(P2);
-  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rmr-browser-'));
-  let chrome: ChildProcess | null = null;
+  let browser: Awaited<ReturnType<typeof launchBrowser>> | null = null;
   const pages: Page[] = [];
   try {
-    chrome = spawn(exe, [
-      '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profileDir}`, '--no-first-run', '--lang=en-US',
-      '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
-      '--disable-backgrounding-occluded-windows', '--mute-audio', '--enable-unsafe-swiftshader',
-      // no internet: nothing but this computer can be reached
-      `--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1 , EXCLUDE ${ip}`, 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'pipe'] });
-    const wsUrl = await new Promise<string>((resolve, reject) => {
-      let buf = '';
-      chrome!.stderr!.on('data', (d) => {
-        buf += d;
-        const m = /DevTools listening on (ws:\/\/\S+)/.exec(buf);
-        if (m) resolve(m[1]);
-      });
-      chrome!.on('exit', () => reject(new Error('browser exited')));
-      setTimeout(() => reject(new Error('browser did not start')), 20000);
-    });
-    cdp = new WebSocket(wsUrl);
-    await new Promise((r) => cdp.once('open', r));
-    cdp.on('message', (d) => {
-      const m = JSON.parse(d.toString()) as CdpMsg;
-      if (m.id !== undefined) {
-        pending.get(m.id)?.(m);
-        pending.delete(m.id);
-      } else for (const f of listeners) f(m);
-    });
+    browser = await launchBrowser(['localhost', '127.0.0.1', ip]);
+    const exe = browser.exe;
 
     console.log(`\n[1] Opening the game in browsers (${path.basename(exe)}, LAN IP ${ip}, no internet)`);
     const A = await Page.open('A', `http://localhost:${P1}/?debug`);
     pages.push(A);
-    await A.waitText('Multiplayer (LAN)', 20000);
+    await A.waitText('Multiplayer', 20000);
     check('organizer: game opens on localhost, main menu', true);
     check('no Electron bridge in the page', !(await A.eval<boolean>('!!window.rmrDesktop')));
     check('bundled fonts load without internet', await A.eval<boolean>(`Promise.all([document.fonts.load('16px "Russo One"'), document.fonts.load('900 16px Nunito')]).then(r => r.every(x => x.length > 0))`));
     await A.lowGraphics();
-    await A.click('Multiplayer (LAN)');
+    await A.click('Multiplayer');
     await A.waitText(`http://${ip}:${P1}`);
     const aText = await A.eval<string>('document.body.textContent');
     check('organizer sees the real LAN address (not localhost), status and counters', aText.includes('LAN server: running') && aText.includes('players: 0') && !aText.includes('http://localhost'));
@@ -243,14 +77,14 @@ async function main() {
     await B.waitText('Quick race');
     check('single player stays available on the LAN page', (await B.hasButton('Story')) && (await B.hasButton('Garage')));
     await B.lowGraphics();
-    await B.click('Multiplayer (LAN)');
+    await B.click('Multiplayer');
     await B.type('#mp-name', 'Bob');
     const C = await Page.open('C', `http://${ip}:${P2}/?debug`);
     pages.push(C);
     await C.waitText('No LAN rooms found', 20000);
     await C.click('Back');
     await C.lowGraphics();
-    await C.click('Multiplayer (LAN)');
+    await C.click('Multiplayer');
     await C.type('#mp-name', 'Cleo');
 
     console.log('\n[2] Rooms: automatic list, two servers, private room');
@@ -429,10 +263,11 @@ async function main() {
     };
     const W = await Page.open('W', 'https://r-m-r-race.netlify.app/', prepare);
     pages.push(W);
-    await W.waitText('Multiplayer (LAN)', 20000);
-    await W.click('Multiplayer (LAN)');
+    await W.waitText('Multiplayer', 20000);
+    await W.click('Multiplayer');
     await W.waitText("Organizer's address");
     const wt = await W.eval<string>('document.body.textContent');
+    check('HTTPS site without a backend address says so', wt.includes('not connected to this site yet'));
     check('HTTPS site: LAN guide, no installer, no fake search', wt.includes('nothing to install') && !/Setup\.exe|Desktop|rmrrace/i.test(wt));
     await sleep(1500);
     check('HTTPS site makes no WebSocket attempts', !sockets.some((s) => s.startsWith('W ')));
@@ -465,20 +300,8 @@ async function main() {
     const real = errors.filter((x) => !/WebSocket connection|ERR_CONNECTION|Failed to load resource/.test(x));
     check('no JavaScript errors in any page', real.length === 0, real.slice(0, 4).join(' | '));
     check('nothing was requested from the internet', outside.length === 0, [...new Set(outside)].slice(0, 4).join(' '));
-    try {
-      await Promise.race([send('Browser.close'), sleep(2000)]);
-    } catch {
-      /* already closed */
-    }
-    cdp?.terminate();
-    chrome?.kill();
+    await browser?.stop();
     await Promise.all([s1.close().catch(() => {}), s2.close().catch(() => {})]);
-    await sleep(500);
-    try {
-      fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
-    } catch {
-      /* the OS still holds a file of the temporary profile */
-    }
   }
   const failed = results.filter((r) => !r.ok).length;
   console.log(`\n${results.length - failed}/${results.length} browser checks passed`);

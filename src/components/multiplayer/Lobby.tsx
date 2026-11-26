@@ -5,6 +5,7 @@ import { CARS, getCar, paintedCar } from '../../data/cars';
 import { NET } from '../../net/config';
 import { serviceHost, shareAddress, useRooms } from '../../net/lanService';
 import { LanAddress } from './LanAddress';
+import { inviteLink } from '../../net/online';
 import { net, useNet } from '../../net/session';
 import { t, useLang } from '../../i18n';
 import type { RoomSettings, RoomState } from '../../net/protocol';
@@ -87,7 +88,7 @@ export default function Lobby({ save, update, onExit }: Props) {
           ←<span className="hidden sm:inline"> {t('lobby.leave')}</span>
         </button>
         <div className="min-w-0 text-center">
-          <h1 className="truncate font-display text-lg uppercase tracking-wider sm:text-3xl">{room.settings.name}</h1>
+          <h1 className="truncate font-display text-lg uppercase tracking-wider sm:text-3xl">{room.kind === 'quick' ? t('on.quick') : room.settings.name}</h1>
           <div className="truncate text-[11px] text-white/55 sm:text-sm">{matchLabel(room.settings)}</div>
         </div>
         <ConnChip conn={view.conn} rtt={view.rtt} />
@@ -99,7 +100,7 @@ export default function Lobby({ save, update, onExit }: Props) {
             <h2 className="mr-auto font-display text-lg uppercase tracking-wider text-white/80">
               {t('lobby.title')} · <span className="text-amber-300">{t('lobby.count', { n: room.players.length, max: room.settings.maxPlayers })}</span>
             </h2>
-            {room.code && (
+            {room.code && !room.kind && (
               <span className="rounded-2xl bg-white/10 px-3 py-1 font-display text-sm ring-1 ring-white/20">
                 🔒 {t('lobby.code')}: <span className="tracking-[0.3em] text-amber-300">{room.code}</span>
               </span>
@@ -153,7 +154,7 @@ export default function Lobby({ save, update, onExit }: Props) {
               </div>
             ))}
           </div>
-          <InviteHint />
+          {room.kind === 'private' && room.code ? <InviteCode code={room.code} /> : room.kind === 'quick' ? <QuickHint /> : <InviteHint />}
         </section>
 
         <div className="space-y-5">
@@ -180,9 +181,9 @@ export default function Lobby({ save, update, onExit }: Props) {
           <section className="panel space-y-3 p-4 sm:p-5">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-lg uppercase tracking-wider text-white/80">{t('lobby.settings')}</h2>
-              {!isHost && <span className="text-xs text-white/50">{t('lobby.onlyHost')}</span>}
+              {!isHost && <span className="text-xs text-white/50">{room.kind === 'quick' ? t('on.autoSettings') : t('lobby.onlyHost')}</span>}
             </div>
-            <HostSettings room={room} isHost={isHost} />
+            <HostSettings key={room.id} room={room} isHost={isHost} />
           </section>
         </div>
       </div>
@@ -236,7 +237,7 @@ function HostSettings({ room, isHost }: { room: RoomState; isHost: boolean }) {
     }, 350);
   };
   useEffect(() => () => clearTimeout(timer.current), []);
-  return <RoomSettingsForm compact value={isHost ? draft : room.settings} onChange={change} disabled={!isHost} minPlayers={Math.max(NET.MIN_PLAYERS, room.players.length)} />;
+  return <RoomSettingsForm compact online={!!room.kind} value={isHost ? draft : room.settings} onChange={change} disabled={!isHost} minPlayers={Math.max(NET.MIN_PLAYERS, room.players.length)} />;
 }
 
 /** why the host cannot start yet (the host server checks the same rules) */
@@ -246,7 +247,8 @@ function startBlocker(room: RoomState): string | null {
   if (offline.length) return t('lobby.needReady', { names: offline.map((p) => p.name).join(', ') });
   const waiting = room.players.filter((p) => !p.ready);
   if (waiting.length) return t('lobby.needReady', { names: waiting.map((p) => p.name).join(', ') });
-  const laggy = room.players.filter((p) => p.ping < 0 || p.ping > NET.MAX_START_PING);
+  // online rooms do not refuse slow connections (the delay adapts); LAN hosts do
+  const laggy = room.kind ? [] : room.players.filter((p) => p.ping < 0 || p.ping > NET.MAX_START_PING);
   if (laggy.length) return t('lobby.badPing', { names: laggy.map((p) => p.name).join(', ') });
   return null;
 }
@@ -254,12 +256,15 @@ function startBlocker(room: RoomState): string | null {
 function BottomBar({ room, isHost, ready, onClose }: { room: RoomState; isHost: boolean; ready: boolean; onClose: () => void }) {
   const blocker = isHost ? startBlocker(room) : null;
   const starting = room.status !== 'lobby';
+  const quick = room.kind === 'quick';
   return (
     <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-[#0b0820]/85 px-4 py-3 backdrop-blur-md sm:px-8 [padding-bottom:max(0.75rem,env(safe-area-inset-bottom))]">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-end gap-3">
         <div className="mr-auto min-w-0 flex-1 text-sm text-white/65">
           {starting ? (
             <span className="animate-pulse font-bold text-amber-200">{t('lobby.starting')}</span>
+          ) : quick ? (
+            <StartCountdown startAt={room.startAt} min={room.min ?? NET.MIN_PLAYERS} />
           ) : isHost ? (
             blocker ? <span>⏳ {blocker}</span> : <span className="font-bold text-emerald-300">✓ {t('lobby.allReady')}</span>
           ) : (
@@ -289,9 +294,58 @@ function BottomBar({ room, isHost, ready, onClose }: { room: RoomState; isHost: 
   );
 }
 
+/** quick play: the server starts the race by itself */
+function StartCountdown({ startAt, min }: { startAt?: number; min: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((n) => n + 1), 250);
+    return () => clearInterval(timer);
+  }, []);
+  if (!startAt) return <span>⏳ {t('on.waitPlayers', { n: min })}</span>;
+  const sec = Math.max(0, Math.ceil((startAt - net.serverNow()) / 1000));
+  return (
+    <span className="font-display text-lg text-amber-200">
+      🚦 {t('on.startsIn')} <b className="tabular-nums text-white">{sec}</b>
+    </span>
+  );
+}
+
+function QuickHint() {
+  return <div className="rounded-2xl bg-white/[0.04] px-4 py-3 text-sm text-white/60 ring-1 ring-white/10">🌍 {t('on.quickLobby')}</div>;
+}
+
+/** private online room: the code and a link for friends anywhere */
+function InviteCode({ code }: { code: string }) {
+  const [copied, setCopied] = useState<'code' | 'link' | 'failed' | null>(null);
+  const copy = async (what: 'code' | 'link') => {
+    try {
+      await navigator.clipboard.writeText(what === 'code' ? code : inviteLink(code));
+      setCopied(what);
+    } catch {
+      setCopied('failed');
+    }
+    window.setTimeout(() => setCopied(null), 2000);
+  };
+  return (
+    <div className="space-y-3 rounded-2xl bg-white/[0.04] px-4 py-4 ring-1 ring-white/10">
+      <div className="text-sm text-white/60">🔑 {t('on.inviteHint')}</div>
+      <div className="flex flex-wrap items-center gap-3">
+        <code className="select-text rounded-2xl bg-black/30 px-4 py-2 font-display text-2xl tracking-[0.3em] text-amber-300 ring-1 ring-white/15 sm:text-3xl">{code}</code>
+        <button onClick={() => void copy('code')} className="btn-ghost !py-2 text-sm">
+          📋 {copied === 'code' ? t('mp.copied') : t('mp.copy')}
+        </button>
+        <button onClick={() => void copy('link')} className="btn-ghost !py-2 text-sm">
+          🔗 {copied === 'link' ? t('mp.copied') : t('on.copyLink')}
+        </button>
+      </div>
+      {copied === 'failed' && <p className="text-sm text-amber-200">{t('on.copyFailed')}</p>}
+    </div>
+  );
+}
+
 function ConnChip({ conn, rtt }: { conn: string; rtt: number }) {
   if (conn === 'reconnecting') {
-    return <span className="animate-pulse rounded-full bg-amber-400/25 px-3 py-1 text-xs font-bold text-amber-100 ring-1 ring-amber-300/40">{t('lobby.reconnecting')}</span>;
+    return <span className="animate-pulse rounded-full bg-amber-400/25 px-3 py-1 text-xs font-bold text-amber-100 ring-1 ring-amber-300/40">{t('on.connLost')}</span>;
   }
   return <PingBadge ms={rtt} />;
 }
