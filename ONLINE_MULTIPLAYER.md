@@ -77,9 +77,9 @@
    ```bash
    npm run deploy
    ```
-5. Скопировать показанный адрес вида `https://rmr-race-online.ИМЯ.workers.dev` и открыть `…/health` — должно быть `"ok":true`.
-6. Netlify → Site configuration → Environment variables → добавить `VITE_MULTIPLAYER_URL` = этот адрес.
-7. Netlify → Deploys → Trigger deploy → **Clear cache and deploy site**.
+5. Скопировать показанный адрес вида `https://rmr-race-online.ИМЯ.workers.dev` (сейчас: `https://rmr-race-online.rmr-race-online.workers.dev`) и открыть `…/health` — должно быть `"ok":true`.
+6. Записать этот адрес в `VITE_MULTIPLAYER_URL` в `netlify.toml` (раздел `[build.environment]`) или в Netlify → Site configuration → Environment variables (переменная в Netlify важнее файла).
+7. Отправить изменения в `master` (или Netlify → Deploys → Trigger deploy → **Clear cache and deploy site**).
 8. Проверить: сайт → Мультиплеер → вверху «Онлайн: 1». В DevTools → Network → WS видно соединение `wss://…/matchmaking` со статусом 101.
 
 Если домен сайта другой, добавьте его в `ALLOWED_ORIGINS` в `cloudflare/wrangler.toml` и опубликуйте Worker снова.
