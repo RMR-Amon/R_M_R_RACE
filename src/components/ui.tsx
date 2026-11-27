@@ -1,6 +1,45 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { MapDef } from '../data/maps';
+import { enterFullscreen, exitFullscreen, fullscreenSupported, fullscreenUseful, useFullscreen } from '../fullscreen';
 import { fmtNum, t } from '../i18n';
+
+/**
+ * Full-screen toggle for phones and tablets (hidden on computers and in the installed app).
+ * Where the browser cannot do it (iPhone Safari) it explains how to add the game to the home screen.
+ */
+export function FullscreenButton({ className = '' }: { className?: string }) {
+  const on = useFullscreen();
+  const [help, setHelp] = useState(false);
+  if (!fullscreenUseful()) return null;
+  const click = () => {
+    if (on) void exitFullscreen();
+    else if (fullscreenSupported()) void enterFullscreen().then((ok) => ok || setHelp(true));
+    else setHelp(true);
+  };
+  return (
+    <>
+      <button onClick={click} className={className} aria-label={t(on ? 'fs.exit' : 'fs.enter')} title={t(on ? 'fs.exit' : 'fs.enter')}>
+        <svg viewBox="0 0 24 24" className="h-[1.1em] w-[1.1em]" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+          {on ? <path d="M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6" /> : <path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" />}
+        </svg>
+      </button>
+      {help && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setHelp(false)}>
+          <div className="panel w-full max-w-sm animate-pop space-y-3 p-5 text-left" onClick={(e) => e.stopPropagation()}>
+            <h2 className="font-display text-2xl">{t('fs.helpTitle')}</h2>
+            <p className="text-sm text-white/80">{t('fs.helpIntro')}</p>
+            <ol className="list-decimal space-y-1.5 pl-5 text-sm">
+              <li>{t('fs.help1')}</li>
+              <li>{t('fs.help2')}</li>
+              <li>{t('fs.help3')}</li>
+            </ol>
+            <button onClick={() => setHelp(false)} className="btn-primary w-full">{t('fs.ok')}</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 export function CoinBadge({ coins, className = '' }: { coins: number; className?: string }) {
   return (

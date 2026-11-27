@@ -4,6 +4,7 @@ import { ITEM_INFO, ITEM_LIST, itemName } from '../game/items';
 import { t, useLang } from '../i18n';
 import type { HudState, RaceConfig, RaceResult } from '../game/types';
 import type { Input } from '../game/input';
+import { FullscreenButton } from './ui';
 
 interface Props {
   config: RaceConfig;
@@ -130,6 +131,7 @@ export default function RaceScreen({ config, muted, onToggleSound, mirrors, onTo
             <button onClick={onToggleSound} className="hud-btn grid place-items-center rounded-xl bg-black/45 text-base ring-1 ring-white/15 backdrop-blur">
               {muted ? '🔇' : '🔊'}
             </button>
+            <FullscreenButton className="hud-btn grid place-items-center rounded-xl bg-black/45 text-base text-white ring-1 ring-white/15 backdrop-blur" />
             <button onClick={() => setPaused(true)} className="hud-btn grid place-items-center rounded-xl bg-black/45 text-sm font-black ring-1 ring-white/15 backdrop-blur">
               ❚❚
             </button>
@@ -368,64 +370,124 @@ function Toast({ text, id }: { text: string; id: number }) {
   );
 }
 
-function HoldButton({
-  onChange,
-  className,
-  children,
-}: {
-  onChange: (down: boolean) => void;
-  className: string;
-  children: ReactNode;
-}) {
-  const [down, setDown] = useState(false);
-  const set = (v: boolean) => {
-    setDown(v);
-    onChange(v);
-  };
-  return (
-    <button
-      onPointerDown={(e) => {
-        e.currentTarget.setPointerCapture(e.pointerId);
-        set(true);
-      }}
-      onPointerUp={() => set(false)}
-      onPointerCancel={() => set(false)}
-      onLostPointerCapture={() => set(false)}
-      onContextMenu={(e) => e.preventDefault()}
-      className={`${className} touch-none select-none transition-transform ${down ? 'scale-90 brightness-125' : ''}`}
-    >
-      {children}
-    </button>
-  );
-}
+type Ctl = 'left' | 'right' | 'gas' | 'brake' | 'drift' | 'fire';
+const CTL_SLOP = 10; // px around a button that still counts as pressing it (fingers are not precise)
 
+/**
+ * On-screen pedals and wheel. One native touch handler for the whole layer tracks every finger
+ * separately: any number of buttons can be held at once (gas + drift + steer + fire), a finger can
+ * slide from one button to another, and the browser never turns a press into scrolling, zooming,
+ * a long-press menu or text selection.
+ */
 function TouchControls({ input }: { input: Input }) {
-  const base = 'grid place-items-center rounded-full font-display text-white ring-2 ring-white/25 backdrop-blur-md shadow-lg';
+  const layer = useRef<HTMLDivElement>(null);
+  const [held, setHeld] = useState<ReadonlySet<Ctl>>(new Set());
+
+  useEffect(() => {
+    const el = layer.current;
+    if (!el) return;
+    const fingers = new Map<number, Ctl | null>();
+    let shown = '';
+    const hit = (x: number, y: number): Ctl | null => {
+      let best: Ctl | null = null;
+      let bestD = Infinity;
+      for (const b of el.querySelectorAll<HTMLElement>('[data-ctl]')) {
+        const r = b.getBoundingClientRect();
+        const dx = Math.max(r.left - x, 0, x - r.right);
+        const dy = Math.max(r.top - y, 0, y - r.bottom);
+        const d = Math.hypot(dx, dy);
+        if (d <= CTL_SLOP && d < bestD) {
+          bestD = d;
+          best = b.dataset.ctl as Ctl;
+        }
+      }
+      return best;
+    };
+    const apply = () => {
+      const on = new Set<Ctl>();
+      for (const c of fingers.values()) if (c) on.add(c);
+      const tc = input.touch;
+      tc.left = on.has('left');
+      tc.right = on.has('right');
+      tc.gas = on.has('gas');
+      tc.brake = on.has('brake');
+      tc.drift = on.has('drift');
+      const key = [...on].sort().join();
+      if (key !== shown) {
+        shown = key;
+        setHeld(on);
+      }
+    };
+    const press = (id: number, x: number, y: number) => {
+      const before = fingers.get(id) ?? null;
+      const now = hit(x, y);
+      fingers.set(id, now);
+      if (now === 'fire' && before !== 'fire') input.fire();
+    };
+    const onTouch = (e: TouchEvent) => {
+      if (e.cancelable) e.preventDefault();
+      for (const t of Array.from(e.changedTouches)) {
+        if (e.type === 'touchend' || e.type === 'touchcancel') fingers.delete(t.identifier);
+        else press(t.identifier, t.clientX, t.clientY);
+      }
+      // a lost touchend (the system took the finger) must not leave a pedal stuck
+      if (e.type !== 'touchmove') for (const id of [...fingers.keys()]) if (!Array.from(e.touches).some((t) => t.identifier === id)) fingers.delete(id);
+      apply();
+    };
+    // mouse / pen on touch laptops
+    const onPointer = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return;
+      if (e.type === 'pointerdown') el.setPointerCapture(e.pointerId);
+      if (e.type === 'pointerup' || e.type === 'pointercancel') fingers.delete(-1 - e.pointerId);
+      else if (e.type === 'pointerdown' || e.buttons) press(-1 - e.pointerId, e.clientX, e.clientY);
+      apply();
+    };
+    const release = () => {
+      fingers.clear();
+      apply();
+    };
+    const opts = { passive: false } as const;
+    const touchTypes = ['touchstart', 'touchmove', 'touchend', 'touchcancel'] as const;
+    const pointerTypes = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'] as const;
+    for (const ty of touchTypes) el.addEventListener(ty, onTouch, opts);
+    for (const ty of pointerTypes) el.addEventListener(ty, onPointer);
+    const noMenu = (e: Event) => e.preventDefault();
+    el.addEventListener('contextmenu', noMenu);
+    window.addEventListener('blur', release);
+    document.addEventListener('visibilitychange', release);
+    return () => {
+      for (const ty of touchTypes) el.removeEventListener(ty, onTouch);
+      for (const ty of pointerTypes) el.removeEventListener(ty, onPointer);
+      el.removeEventListener('contextmenu', noMenu);
+      window.removeEventListener('blur', release);
+      document.removeEventListener('visibilitychange', release);
+      release();
+    };
+  }, [input]);
+
+  const base = 'grid place-items-center rounded-full font-display text-white ring-2 ring-white/25 backdrop-blur-md shadow-lg transition-transform';
+  const btn = (c: Ctl, cls: string, label: ReactNode) => (
+    <div data-ctl={c} className={`${base} ${cls} ${held.has(c) ? 'scale-90 brightness-125 ring-white/70' : ''}`}>
+      {label}
+    </div>
+  );
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 px-3 pt-3 [padding-bottom:max(0.75rem,env(safe-area-inset-bottom))] [padding-left:max(0.75rem,env(safe-area-inset-left))] [padding-right:max(0.75rem,env(safe-area-inset-right))]">
-      <div className="pointer-events-auto flex gap-2.5">
-        <HoldButton onChange={(v) => (input.touch.left = v)} className={`${base} tc-md bg-white/15 text-xl`}>
-          ◀
-        </HoldButton>
-        <HoldButton onChange={(v) => (input.touch.right = v)} className={`${base} tc-md bg-white/15 text-xl`}>
-          ▶
-        </HoldButton>
+    <div
+      ref={layer}
+      data-touch-layer
+      className="touch-controls absolute inset-x-0 bottom-0 flex touch-none select-none items-end justify-between gap-2 px-3 pt-3 [padding-bottom:max(0.75rem,env(safe-area-inset-bottom))] [padding-left:max(0.75rem,env(safe-area-inset-left))] [padding-right:max(0.75rem,env(safe-area-inset-right))]"
+    >
+      <div className="flex gap-2.5">
+        {btn('left', 'tc-md bg-white/15 text-xl', '◀')}
+        {btn('right', 'tc-md bg-white/15 text-xl', '▶')}
       </div>
-      <div className="pointer-events-auto flex items-end gap-2">
+      <div className="flex items-end gap-2">
         <div className="flex flex-col items-center gap-2">
-          <HoldButton onChange={(v) => v && input.fire()} className={`${base} tc-sm bg-fuchsia-500/50 text-lg`}>
-            🎯
-          </HoldButton>
-          <HoldButton onChange={(v) => (input.touch.brake = v)} className={`${base} tc-sm bg-rose-600/50 text-[10px]`}>
-            {t('touch.brake')}
-          </HoldButton>
+          {btn('fire', 'tc-sm bg-fuchsia-500/50 text-lg', '🎯')}
+          {btn('brake', 'tc-sm bg-rose-600/50 text-[10px]', t('touch.brake'))}
         </div>
-        <HoldButton onChange={(v) => (input.touch.drift = v)} className={`${base} tc-sm bg-orange-500/50 text-[10px]`}>
-          {t('touch.drift')}
-        </HoldButton>
-        <HoldButton onChange={(v) => (input.touch.gas = v)} className={`${base} tc-lg bg-emerald-500/50 text-sm`}>
-          {t('touch.gas')}
-        </HoldButton>
+        {btn('drift', 'tc-sm bg-orange-500/50 text-[10px]', t('touch.drift'))}
+        {btn('gas', 'tc-lg bg-emerald-500/50 text-sm', t('touch.gas'))}
       </div>
     </div>
   );

@@ -16,6 +16,7 @@ import { net, savedSession, useNet, type ResultsView } from './net/session';
 import { desktopApi, setJoinHost, type LaunchRoute } from './net/desktop';
 import { isGuestPage } from './net/lanService';
 import { readInviteLink } from './net/online';
+import { enterFullscreen, fullscreenSupported, fullscreenUseful } from './fullscreen';
 import type { MatchInfo } from './net/protocol';
 import type { RaceConfig, RaceResult } from './game/types';
 
@@ -135,6 +136,8 @@ export default function App() {
 
   const startRace = (cfg: RaceConfig) => {
     audio.init();
+    // phones: the race runs without the browser's bars (only works from a tap; an online start just keeps the current view)
+    if (fullscreenUseful() && fullscreenSupported()) void enterFullscreen();
     setConfig(cfg);
     setRaceKey((k) => k + 1);
     setScreen('race');

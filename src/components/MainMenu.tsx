@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import CarPreview from './CarPreview';
-import { Choice, CoinBadge, ScreenShell } from './ui';
+import { Choice, CoinBadge, FullscreenButton, ScreenShell } from './ui';
 import { getCar, paintedCar } from '../data/cars';
 import { LANGS, t, useLang } from '../i18n';
 import type { SaveData } from '../store/save';
@@ -26,6 +26,7 @@ export default function MainMenu({ save, update, onPlay, onStory, onGarage, onMu
         <header className="flex items-center justify-between gap-2">
           <CoinBadge coins={save.coins} />
           <div className="flex gap-2">
+            <FullscreenButton className="btn-ghost grid place-items-center !px-2.5 !py-1.5 text-lg sm:!px-3 sm:!py-2 sm:text-xl" />
             <button onClick={() => setSettings(true)} className="btn-ghost !px-2.5 !py-1.5 text-lg sm:!px-3 sm:!py-2 sm:text-xl" aria-label={t('menu.settings')}>
               ⚙️
             </button>

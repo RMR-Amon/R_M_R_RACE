@@ -64,6 +64,8 @@ body {
   -webkit-tap-highlight-color: transparent;
   user-select: none;
   -webkit-user-select: none;
+  /* no iOS long-press bubble (copy / look up) while holding a pedal */
+  -webkit-touch-callout: none;
 }
 
 @layer components {
